@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2018 The Tensor2Tensor Authors.
+# Copyright 2019 The Tensor2Tensor Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -262,7 +262,7 @@ class Image2ClassProblem(ImageProblem):
 
 def encode_images_as_png(images):
   """Yield images encoded as pngs."""
-  if tf.contrib.eager.in_eager_mode():
+  if tf.executing_eagerly():
     for image in images:
       yield tf.image.encode_png(image).numpy()
   else:
@@ -355,8 +355,8 @@ class Image2TextProblem(ImageProblem):
 
   def hparams(self, defaults, unused_model_hparams):
     p = defaults
-    p.modality = {"inputs": modalities.ImageModality,
-                  "targets": modalities.SymbolModality}
+    p.modality = {"inputs": modalities.ModalityType.IMAGE,
+                  "targets": modalities.ModalityType.SYMBOL}
     p.vocab_size = {"inputs": 256,
                     "targets": self._encoders["targets"].vocab_size}
     p.batch_size_multiplier = 256

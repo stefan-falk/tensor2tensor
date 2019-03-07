@@ -47,6 +47,7 @@ pip install tensor2tensor && t2t-trainer \
 ### Contents
 
 * [Suggested Datasets and Models](#suggested-datasets-and-models)
+  * [Mathematical Language Understanding](#mathematical-language-understanding)
   * [Story, Question and Answer](#story-question-and-answer)
   * [Image Classification](#image-classification)
   * [Image Generation](#image-generation)
@@ -79,6 +80,24 @@ hyperparameters that we know works well in our setup. We usually
 run either on Cloud TPUs or on 8-GPU machines; you might need
 to modify the hyperparameters if you run on a different setup.
 
+### Mathematical Language Understanding
+
+For evaluating mathematical expressions at the character level involving addition, subtraction and multiplication of both positive and negative decimal numbers with variable digits assigned to symbolic variables, use
+
+* the [MLU](https://art.wangperawong.com/mathematical_language_understanding_train.tar.gz) data-set:
+ `--problem=algorithmic_math_two_variables`
+
+You can try solving the problem with different transformer models and hyperparameters as described in the [paper](https://arxiv.org/abs/1812.02825):
+* Standard transformer:
+`--model=transformer`
+`--hparams_set=transformer_tiny`
+* Universal transformer:
+`--model=universal_transformer`
+`--hparams_set=universal_transformer_tiny`
+* Adaptive universal transformer:
+`--model=universal_transformer`
+`--hparams_set=adaptive_universal_transformer_tiny`
+
 ### Story, Question and Answer
 
 For answering questions based on a story, use
@@ -89,7 +108,6 @@ For answering questions based on a story, use
 You can choose the bAbi task from the range [1,20] and the subset from 1k or
 10k. To combine test data from all tasks into a single test set, use
 `--problem=babi_qa_concat_all_tasks_10k`
-
 
 ### Image Classification
 
@@ -365,7 +383,7 @@ and are registered with
 **Hyperparameter sets** are defined and registered in code with
 [`@registry.register_hparams`](https://github.com/tensorflow/tensor2tensor/tree/master/tensor2tensor/utils/registry.py)
 and are encoded in
-[`tf.contrib.training.HParams`](https://github.com/tensorflow/tensorflow/blob/master/tensorflow/contrib/training/python/training/hparam.py)
+[`HParams`](https://github.com/tensorflow/tensor2tensor/tree/master/tensor2tensor/utils/hparam.py)
 objects. The `HParams` are available to both the problem specification and the
 model. A basic set of hyperparameters are defined in
 [`common_hparams.py`](https://github.com/tensorflow/tensor2tensor/tree/master/tensor2tensor/layers/common_hparams.py)
@@ -465,5 +483,7 @@ T2T](https://research.googleblog.com/2017/06/accelerating-deep-learning-research
 * [Fast Decoding in Sequence Models using Discrete Latent Variables](https://arxiv.org/abs/1803.03382)
 * [Adafactor: Adaptive Learning Rates with Sublinear Memory Cost](https://arxiv.org/abs/1804.04235)
 * [Universal Transformers](https://arxiv.org/abs/1807.03819)
+* [Attending to Mathematical Language with Transformers](https://arxiv.org/abs/1812.02825)
+* [The Evolved Transformer](https://arxiv.org/abs/1901.11117)
 
 *Note: This is not an official Google product.*

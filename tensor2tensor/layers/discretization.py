@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2018 The Tensor2Tensor Authors.
+# Copyright 2019 The Tensor2Tensor Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -217,8 +217,8 @@ def embedding_lookup(x,
 
   # Currently, we use the mean scaling for the commitment loss, as opposed to
   # summing across all non-batch dimensions.
-  q_loss = tf.reduce_mean(tf.square((tf.stop_gradient(x) - x_means)))
-  e_loss = tf.reduce_mean(tf.square(x - tf.stop_gradient(x_means)))
+  q_loss = tf.reduce_mean(tf.squared_difference(tf.stop_gradient(x), x_means))
+  e_loss = tf.reduce_mean(tf.squared_difference(x, tf.stop_gradient(x_means)))
   return x_means_hot, x_means, q_loss, e_loss, neg_q_entropy
 
 
@@ -379,7 +379,7 @@ def vae(x, z_size, name=None):
     epsilon = tf.random_normal([shape[0], shape[1], 1, z_size])
     z = mu + tf.exp(log_sigma / 2) * epsilon
     kl = 0.5 * tf.reduce_mean(
-        tf.exp(log_sigma) + tf.square(mu) - 1. - log_sigma, axis=-1)
+        tf.expm1(log_sigma) + tf.square(mu) - log_sigma, axis=-1)
     free_bits = z_size // 4
     kl_loss = tf.reduce_mean(tf.maximum(kl - free_bits, 0.0))
     return z, kl_loss, mu, log_sigma
@@ -469,11 +469,12 @@ def gumbel_softmax(x,
     # Add losses that prevent too few being used.
     distrib = tf.reshape(logsm, [-1, 2**z_size]) * maxvhot
     d_mean = tf.reduce_mean(distrib, axis=[0], keep_dims=True)
-    d_variance = tf.reduce_mean(tf.square(distrib - d_mean), axis=[0])
+    d_variance = tf.reduce_mean(
+        tf.squared_difference(distrib, d_mean), axis=[0])
     d_dev = -tf.reduce_mean(d_variance)
     ret = s
 
-    if mode != tf.contrib.learn.ModeKeys.TRAIN:
+    if mode != tf.estimator.ModeKeys.TRAIN:
       ret = tf.reshape(maxvhot, common_layers.shape_list(s))  # Just hot @eval.
     return m, ret, d_dev * 5.0 + tf.reduce_mean(kl) * 0.002
 
@@ -822,7 +823,7 @@ def predict_bits_with_lstm(prediction_source, state_size, total_num_bits,
 
   with tf.variable_scope("predict_bits_with_lstm"):
     # Layers and cell state creation.
-    lstm_cell = tf.contrib.rnn.LSTMCell(state_size)
+    lstm_cell = tf.nn.rnn_cell.LSTMCell(state_size)
     discrete_predict = tf.layers.Dense(2**bits_at_once, name="discrete_predict")
     discrete_embed = tf.layers.Dense(state_size, name="discrete_embed")
     batch_size = common_layers.shape_list(prediction_source)[0]
@@ -924,7 +925,7 @@ def vq_nearest_neighbor(x, means,
     x_means_hot = tf.one_hot(x_means_idx, bottleneck_size)
   x_means_hot_flat = tf.reshape(x_means_hot, [-1, bottleneck_size])
   x_means = tf.matmul(x_means_hot_flat, means)
-  e_loss = tf.reduce_mean(tf.square(x - tf.stop_gradient(x_means)))
+  e_loss = tf.reduce_mean(tf.squared_difference(x, tf.stop_gradient(x_means)))
   return x_means_hot, e_loss, dist
 
 
@@ -1333,7 +1334,8 @@ def gumbel_softmax_discrete_bottleneck(x,
   x_means_assignments_flat = tf.reshape(x_means_assignments,
                                         [-1, bottleneck_size])
   x_means = tf.matmul(x_means_assignments_flat, means)
-  commitment_loss = tf.reduce_mean(tf.square(x - tf.stop_gradient(x_means)))
+  commitment_loss = tf.reduce_mean(
+      tf.squared_difference(x, tf.stop_gradient(x_means)))
 
   # Update the ema variables.
   updated_ema_count = moving_averages.assign_moving_average(

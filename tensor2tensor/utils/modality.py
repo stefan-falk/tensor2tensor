@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2018 The Tensor2Tensor Authors.
+# Copyright 2019 The Tensor2Tensor Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -18,8 +18,9 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-import re
+from tensor2tensor.layers import common_attention
 from tensor2tensor.layers import common_layers
+from tensor2tensor.utils import misc_utils
 
 import tensorflow as tf
 
@@ -45,9 +46,6 @@ class Modality(object):
     same as the `bottom` function, and that is the default we use. But, e.g.,
     for images, a different function might be needed to regress properly.
   * `loss` would compare the generated image to the target image and score it.
-
-  All the functions have simple and sharded versions. A sub-class only needs to
-  implement the simple version, the default sharding will be used then.
   """
 
   def __init__(self, model_hparams, vocab_size=None):
@@ -58,17 +56,7 @@ class Modality(object):
 
   @property
   def name(self):
-    camelcase_name = type(self).__name__  # DeCamelCase for TF readability.
-    return re.sub("([A-Z]+)", r"_\1", camelcase_name).lower()[1:]
-
-  @property
-  def top_dimensionality(self):
-    """Integer, the last dimension of the predictions (vocab size)."""
-    return self._vocab_size
-
-  @property
-  def _body_input_depth(self):
-    return self._model_hparams.hidden_size
+    return misc_utils.camelcase_to_snakecase(type(self).__name__)
 
   @property
   def top_is_pointwise(self):
@@ -112,19 +100,6 @@ class Modality(object):
     """
     raise NotImplementedError("Abstract Method")
 
-  def bottom_sharded(self, xs, data_parallelism):
-    """Transform the inputs.
-
-    Args:
-      xs: A list of num_datashards Tensors (one per shard)
-        each with shape [batch, p0, p1, depth]
-      data_parallelism: a expert_utils.Parallelism object
-    Returns:
-      shaded_body_input: A list of num_datashards Tensors, each with shape
-        [batch, p0, p1, body_input_depth].
-    """
-    return data_parallelism(self.bottom, xs)
-
   def targets_bottom(self, x):
     """Transform one shard of targets.
 
@@ -135,19 +110,6 @@ class Modality(object):
     """
     with tf.variable_scope("targets_bottom"):
       return self.bottom(x)
-
-  def targets_bottom_sharded(self, xs, data_parallelism):
-    """Transform the targets.
-
-    Args:
-      xs: A list of num_datashards Tensors (one per shard)
-        each with shape [batch, p0, p1, target_channels]
-      data_parallelism: a expert_utils.Parallelism object
-    Returns:
-      shaded_body_input: A list of num_datashards Tensors, each with shape
-        [batch, p0, p1, body_input_depth].
-    """
-    return data_parallelism(self.targets_bottom, xs)
 
   def top(self, body_output, targets):
     """Generate predictions/logits for one shard of output.
@@ -163,38 +125,17 @@ class Modality(object):
     """
     raise NotImplementedError("Abstract Method")
 
-  def top_sharded(self, sharded_body_output, sharded_targets, data_parallelism):
-    """Generate predictions/logits for all shards.
-
-    Classes with cross-shard interaction will override this function.
-
-    Args:
-      sharded_body_output: A list of Tensors.
-      sharded_targets: A list of Tensors.
-      data_parallelism: a expert_utils.Parallelism object.
-    Returns:
-      sharded_logits: A list of Tensors.
-    """
-    return data_parallelism(self.top, sharded_body_output, sharded_targets)
-
   def loss(self, top_out, targets, weights_fn=None):
     """Compute loss numerator and denominator for one shard of output."""
     logits = top_out
     if weights_fn is None:
       weights_fn = self.targets_weights_fn
+    logits = common_attention.maybe_upcast(logits, hparams=self._model_hparams)
     return common_layers.padded_cross_entropy(
         logits,
         targets,
         self._model_hparams.label_smoothing,
         weights_fn=weights_fn)
-
-  def loss_sharded(self, sharded_top_out, sharded_targets, data_parallelism):
-    """Compute loss for all shards."""
-    sharded_loss_num, sharded_loss_den = data_parallelism(
-        self.loss, sharded_top_out, sharded_targets)
-    loss = tf.add_n(sharded_loss_num) / tf.maximum(1.0,
-                                                   tf.add_n(sharded_loss_den))
-    return loss
 
   @property
   def is_class_modality(self):

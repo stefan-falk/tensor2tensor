@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2018 The Tensor2Tensor Authors.
+# Copyright 2019 The Tensor2Tensor Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -323,10 +323,12 @@ def transformer_decoder_layers(inputs,
                                attention_type="local_mask_right",
                                q_padding="LEFT", kv_padding="LEFT")
       elif attention_type == AttentionType.RELATIVE_LOCAL_1D:
-        y = local_attention_1d(common_layers.layer_preprocess(x, hparams),
-                               hparams,
-                               attention_type="rel_local_mask_right",
-                               q_padding="LEFT", kv_padding="LEFT")
+        y = local_attention_1d(
+            common_layers.layer_preprocess(x, hparams),
+            hparams,
+            attention_type="local_relative_mask_right",
+            q_padding="LEFT",
+            kv_padding="LEFT")
       elif attention_type == AttentionType.NON_CAUSAL_1D:
         y = local_attention_1d(common_layers.layer_preprocess(x, hparams),
                                hparams,
@@ -475,7 +477,7 @@ def postprocess_image(x, rows, cols, hparams):
       number of elements in x is batch * rows * cols * hparams.hidden_size.
     rows: Integer representing number of rows in a 2-D data point.
     cols: Integer representing number of columns in a 2-D data point.
-    hparams: tf.contrib.training.HParams set.
+    hparams: HParams set.
 
   Returns:
     Tensor of shape [batch, rows, cols, depth], where depth is
@@ -501,7 +503,7 @@ def postprocess_image(x, rows, cols, hparams):
                               use_bias=True,
                               activation=None,
                               name="output_conv")
-  if (hparams.mode == tf.contrib.learn.ModeKeys.INFER and
+  if (hparams.mode == tf.estimator.ModeKeys.PREDICT and
       hparams.block_raster_scan):
     y = targets
     yshape = common_layers.shape_list(y)
@@ -547,7 +549,7 @@ def prepare_decoder(targets, hparams):
 
   # during training, images are [batch, IMG_LEN, IMG_LEN, 3].
   # At inference, they are [batch, curr_infer_length, 1, 1]
-  if hparams.mode == tf.contrib.learn.ModeKeys.INFER:
+  if hparams.mode == tf.estimator.ModeKeys.PREDICT:
     curr_infer_length = targets_shape[1]
     if hparams.block_raster_scan:
       assert hparams.img_len*channels % hparams.query_shape[1] == 0
@@ -608,11 +610,13 @@ def prepare_image(inputs, hparams, name=None):
   channels = hparams.num_channels
 
   hidden_size = hparams.hidden_size
-  # TODO(trandustin): Check via modalities.IdentityModality and not its name.
+  # TODO(trandustin): Check via modalities.ModalityType.IDENTITY and not str.
   # The current implementation is to avoid circular imports, modalities ->
   # discretization -> common_image_attention -> modalities.
   if "targets" in hparams.modality:
-    target_modality_name = hparams.modality["targets"].__name__
+    target_modality_name = hparams.modality["targets"]
+    if not isinstance(target_modality_name, str):
+      target_modality_name = target_modality_name.__name__
   else:
     target_modality_name = None
   if target_modality_name == "IdentityModality":
@@ -635,7 +639,7 @@ def create_output(decoder_output, rows, cols, targets, hparams):
     cols: Integer representing number of columns in a 2-D data point.
     targets: Tensor of shape [batch, hparams.img_len, hparams.img_len,
       hparams.num_channels].
-    hparams: tf.contrib.training.HParams set.
+    hparams: HParams set.
 
   Returns:
     Tensor of shape [batch, hparams.img_len, hparams.img_len,

@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2018 The Tensor2Tensor Authors.
+# Copyright 2019 The Tensor2Tensor Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -19,7 +19,6 @@ from __future__ import division
 from __future__ import print_function
 
 import contextlib
-import copy
 import os
 import sys
 from tensor2tensor import models  # pylint: disable=unused-import
@@ -28,10 +27,12 @@ from tensor2tensor.data_generators import problem  # pylint: disable=unused-impo
 from tensor2tensor.utils import cloud_mlengine
 from tensor2tensor.utils import decoding
 from tensor2tensor.utils import flags as t2t_flags  # pylint: disable=unused-import
+from tensor2tensor.utils import hparams_lib
 from tensor2tensor.utils import mlperf_log
 from tensor2tensor.utils import registry
 from tensor2tensor.utils import trainer_lib
 from tensor2tensor.utils import usr_dir
+from tensor2tensor.v2 import t2t as t2t_v2
 import tensorflow as tf
 
 from tensorflow.contrib.tpu.python.tpu import tpu_config
@@ -39,7 +40,7 @@ from tensorflow.contrib.tpu.python.tpu import tpu_config
 flags = tf.flags
 FLAGS = flags.FLAGS
 
-# See flags.py for additional command-line flags.
+# See utils/flags.py for additional command-line flags.
 flags.DEFINE_string("t2t_usr_dir", None,
                     "Path to a Python module that will be imported. The "
                     "__init__.py file should include the necessary imports. "
@@ -69,6 +70,7 @@ flags.DEFINE_integer("inter_op_parallelism_threads", 0,
 flags.DEFINE_integer("intra_op_parallelism_threads", 0,
                      "Number of intra_op_parallelism_threads to use for CPU. "
                      "See TensorFlow config.proto for details.")
+flags.DEFINE_bool("v2", False, "Whether to use T2T v2.")
 # TODO(lukaszkaiser): resolve memory and variable assign issues and set to True.
 flags.DEFINE_bool(
     "optionally_use_dist_strat", False,
@@ -188,6 +190,7 @@ def create_experiment_fn():
       eval_early_stopping_metric_minimize=FLAGS
       .eval_early_stopping_metric_minimize,
       eval_timeout_mins=FLAGS.eval_timeout_mins,
+      eval_use_test_set=FLAGS.eval_use_test_set,
       use_tpu=FLAGS.use_tpu,
       use_tpu_estimator=FLAGS.use_tpu_estimator,
       use_xla=FLAGS.xla_compile,
@@ -331,10 +334,10 @@ def save_metadata(hparams):
       f.write(t2t_flags_str)
 
   # Save hparams as hparams.json
-  new_hparams = copy.deepcopy(hparams)
-
+  new_hparams = hparams_lib.copy_hparams(hparams)
   # Modality class is not JSON serializable so remove.
   new_hparams.del_hparam("modality")
+
   hparams_fname = os.path.join(output_dir, "hparams.json")
   with tf.gfile.Open(hparams_fname, "w") as f:
     f.write(new_hparams.to_json(indent=0, sort_keys=True))
@@ -355,6 +358,26 @@ def run_std_server():
 
 def main(argv):
   tf.logging.set_verbosity(tf.logging.INFO)
+
+  if FLAGS.v2:
+    tf.enable_v2_behavior()
+    # Hacking main v1 flags to work with v2.
+    config_strs = []
+    config_strs.append(
+        "train_fn.train_steps=" + str(FLAGS.train_steps))
+    config_strs.append(
+        "train_fn.eval_steps=" + str(FLAGS.eval_steps))
+    config_strs.append(
+        "train_fn.eval_frequency=" + str(FLAGS.local_eval_frequency))
+    if FLAGS.hparams:
+      config_strs.extend(str(FLAGS.hparams).split(","))
+    config_str = "\n".join(config_strs)
+    data_dir = os.path.expanduser(FLAGS.data_dir)
+    output_dir = os.path.expanduser(FLAGS.output_dir)
+    t2t_v2.t2t_train(FLAGS.model, FLAGS.problem,
+                     data_dir=data_dir, output_dir=output_dir,
+                     config_file=FLAGS.hparams_set, config=config_str)
+    return
 
   usr_dir.import_usr_dir(FLAGS.t2t_usr_dir)
 

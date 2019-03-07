@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2018 The Tensor2Tensor Authors.
+# Copyright 2019 The Tensor2Tensor Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -108,16 +108,16 @@ def make_grpc_request_fn(servable_name, server, timeout_secs):
     request = predict_pb2.PredictRequest()
     request.model_spec.name = servable_name
     request.inputs["input"].CopyFrom(
-        tf.contrib.util.make_tensor_proto(
+        tf.make_tensor_proto(
             [ex.SerializeToString() for ex in examples], shape=[len(examples)]))
     response = stub.Predict(request, timeout_secs)
     outputs = tf.make_ndarray(response.outputs["outputs"])
     scores = tf.make_ndarray(response.outputs["scores"])
     assert len(outputs) == len(scores)
     return [{
-        "outputs": outputs[i],
-        "scores": scores[i]
-    } for i in range(len(outputs))]
+        "outputs": output,
+        "scores": score
+    } for output, score in zip(outputs, scores)]
 
   return _make_grpc_request
 

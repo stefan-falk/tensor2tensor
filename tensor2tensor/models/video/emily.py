@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2018 The Tensor2Tensor Authors.
+# Copyright 2019 The Tensor2Tensor Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -276,7 +276,7 @@ class NextFrameEmily(sv2p.NextFrameSv2pLegacy):
     for i, image in enumerate(images):
       with tf.variable_scope("encoder", reuse=tf.AUTO_REUSE):
         enc, skips = self.encoder(image, rnn_size, has_batchnorm=has_batchnorm)
-        enc = tfcl.flatten(enc)
+        enc = tfl.flatten(enc)
         enc_images.append(enc)
         enc_skips.append(skips)
 

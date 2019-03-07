@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2018 The Tensor2Tensor Authors.
+# Copyright 2019 The Tensor2Tensor Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -46,7 +46,7 @@ class Imagetransformer2d(t2t_model.T2TModel):
     targets = features["targets"]
     targets_shape = common_layers.shape_list(targets)
     if not (tf.get_variable_scope().reuse or
-            hparams.mode == tf.contrib.learn.ModeKeys.INFER):
+            hparams.mode == tf.estimator.ModeKeys.PREDICT):
       tf.summary.image("targets", targets, max_outputs=1)
 
     decoder_input, rows, cols = cia.prepare_decoder(
@@ -76,7 +76,7 @@ class Img2imgTransformer(t2t_model.T2TModel):
     targets = features["targets"]
     inputs = features["inputs"]
     if not (tf.get_variable_scope().reuse or
-            hparams.mode == tf.contrib.learn.ModeKeys.INFER):
+            hparams.mode == tf.estimator.ModeKeys.PREDICT):
       tf.summary.image("inputs", inputs, max_outputs=1)
       tf.summary.image("targets", targets, max_outputs=1)
 
@@ -112,7 +112,7 @@ class Img2imgTransformerBlockParallel(t2t_model.T2TModel):
     targets = features["targets"]
     inputs = features["inputs"]
     if not (tf.get_variable_scope().reuse or
-            hparams.mode == tf.contrib.learn.ModeKeys.INFER):
+            hparams.mode == tf.estimator.ModeKeys.PREDICT):
       tf.summary.image("inputs", inputs, max_outputs=1)
       tf.summary.image("targets", targets, max_outputs=1)
 
@@ -783,7 +783,7 @@ def imagetransformer2d_tiny():
 
 def update_hparams_for_tpu(hparams):
   hparams.use_pad_remover = False  # where op not supported
-  hparams.optimizer = "TrueAdam"
+  hparams.optimizer = "true_adam"
   hparams.batch_size = 4
 
 

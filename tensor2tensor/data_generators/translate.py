@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2018 The Tensor2Tensor Authors.
+# Copyright 2019 The Tensor2Tensor Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -21,6 +21,7 @@ from __future__ import print_function
 
 import os
 import tarfile
+from tensor2tensor.data_generators import cleaner_en_xx
 from tensor2tensor.data_generators import generator_utils
 from tensor2tensor.data_generators import problem
 from tensor2tensor.data_generators import text_encoder
@@ -36,6 +37,7 @@ FLAGS = tf.flags.FLAGS
 class TranslateProblem(text_problems.Text2TextProblem):
   """Base class for translation problems."""
 
+  @property
   def is_generate_per_split(self):
     return True
 
@@ -143,7 +145,22 @@ def compile_data(tmp_dir, datasets, filename):
         if url.startswith("http"):
           generator_utils.maybe_download(tmp_dir, compressed_filename, url)
 
-        if dataset[1][0] == "tsv":
+        if dataset[1][0] == "tmx":
+          tmx_filename = os.path.join(tmp_dir, dataset[1][1])
+          if tmx_filename.endswith(".gz"):
+            new_filename = tmx_filename.strip(".gz")
+            if not tf.gfile.Exists(new_filename):
+              generator_utils.gunzip_file(tmx_filename, new_filename)
+            tmx_filename = new_filename
+          source, target = None, None
+          with tf.gfile.Open(tmx_filename) as tmx_file:
+            for source, target in cleaner_en_xx.paracrawl_v3_pairs(tmx_file):
+              lang1_resfile.write(source)
+              lang1_resfile.write("\n")
+              lang2_resfile.write(target)
+              lang2_resfile.write("\n")
+
+        elif dataset[1][0] == "tsv":
           _, src_column, trg_column, glob_pattern = dataset[1]
           filenames = tf.gfile.Glob(os.path.join(tmp_dir, glob_pattern))
           if not filenames:
@@ -168,6 +185,7 @@ def compile_data(tmp_dir, datasets, filename):
                     lang1_resfile.write("\n")
                     lang2_resfile.write(target)
                     lang2_resfile.write("\n")
+
         else:
           lang1_filename, lang2_filename = dataset[1]
           lang1_filepath = os.path.join(tmp_dir, lang1_filename)

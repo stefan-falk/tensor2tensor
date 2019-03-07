@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2018 The Tensor2Tensor Authors.
+# Copyright 2019 The Tensor2Tensor Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -55,7 +55,7 @@ class Imagetransformer(t2t_model.T2TModel):
                        "must be ImageChannelBottomIdentityModality and "
                        "num_channels must be 1.")
     if (not tf.get_variable_scope().reuse and
-        hparams.mode != tf.contrib.learn.ModeKeys.INFER and
+        hparams.mode != tf.estimator.ModeKeys.PREDICT and
         hparams.modality["targets"] !=
         modalities.ImageChannelBottomIdentityModality):
       tf.summary.image("targets", tf.to_float(targets), max_outputs=1)

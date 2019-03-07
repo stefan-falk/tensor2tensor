@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2018 The Tensor2Tensor Authors.
+# Copyright 2019 The Tensor2Tensor Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -24,6 +24,7 @@ from tensor2tensor.layers import common_hparams
 from tensor2tensor.layers import common_layers
 from tensor2tensor.utils import registry
 from tensor2tensor.utils import t2t_model
+from tensor2tensor.utils.hparam import HParams
 
 import tensorflow as tf
 
@@ -568,7 +569,9 @@ class Resnet(t2t_model.T2TModel):
       return out
 
     out = tf.reduce_mean(out, [1, 2])
-    num_classes = self._problem_hparams.modality["targets"].top_dimensionality
+    num_classes = self._problem_hparams.vocab_size["targets"]
+    if hasattr(self._hparams, "vocab_divisor"):
+      num_classes += (-num_classes) % self._hparams.vocab_divisor
     logits = tf.layers.dense(out, num_classes, name="logits")
 
     losses = {"training": 0.0}
@@ -787,7 +790,7 @@ def resnet_200():
 # Pruning parameters
 @registry.register_pruning_params
 def resnet_weight():
-  hp = tf.contrib.training.HParams()
+  hp = HParams()
   hp.add_hparam("strategy", "weight")
   hp.add_hparam("black_list", ["logits", "bias"])
   hp.add_hparam("white_list", ["td_conv"])
@@ -805,7 +808,7 @@ def resnet_unit():
 # Adversarial attack parameters
 @registry.register_attack_params
 def resnet_fgsm():
-  aparams = tf.contrib.training.HParams()
+  aparams = HParams()
   aparams.attack = "fgsm"
   aparams.epsilon_name = "eps"
   aparams.attack_epsilons = [i * 0.8 for i in range(20)]

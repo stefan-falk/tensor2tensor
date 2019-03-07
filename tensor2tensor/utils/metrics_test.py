@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2018 The Tensor2Tensor Authors.
+# Copyright 2019 The Tensor2Tensor Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -108,6 +108,7 @@ class MetricsTest(tf.test.TestCase):
   def testWordErrorRateMetric(self):
 
     ref = np.asarray([
+<<<<<<< HEAD
       # a b c
       [97, 34, 98, 34, 99],
       [97, 34, 98, 34, 99],
@@ -120,6 +121,20 @@ class MetricsTest(tf.test.TestCase):
       [97, 34, 98, 0, 0],  # a b
       [97, 34, 98, 34, 100],  # a b d
       [0, 0, 0, 0, 0]  # empty
+=======
+        # a b c
+        [97, 34, 98, 34, 99],
+        [97, 34, 98, 34, 99],
+        [97, 34, 98, 34, 99],
+        [97, 34, 98, 34, 99],
+    ])
+
+    hyp = np.asarray([
+        [97, 34, 98, 34, 99],  # a b c
+        [97, 34, 98, 0, 0],  # a b
+        [97, 34, 98, 34, 100],  # a b d
+        [0, 0, 0, 0, 0]  # empty
+>>>>>>> 2d10f58303634f5f77c73c10fb8b17c0e84ce2f0
     ])
 
     labels = np.reshape(ref, ref.shape + (1, 1))
@@ -130,9 +145,14 @@ class MetricsTest(tf.test.TestCase):
         predictions[i, j, 0, 0, idx] = 1
 
     with self.test_session() as session:
+<<<<<<< HEAD
       actual_wer, actual_ref_len = session.run(
         metrics.word_error_rate(predictions, labels)
       )
+=======
+      actual_wer, unused_actual_ref_len = session.run(
+          metrics.word_error_rate(predictions, labels))
+>>>>>>> 2d10f58303634f5f77c73c10fb8b17c0e84ce2f0
 
     expected_wer = 0.417
     places = 3
@@ -154,7 +174,7 @@ class MetricsTest(tf.test.TestCase):
     predictions = np.random.randint(4, size=(12, 12, 12, 1))
     targets = np.random.randint(4, size=(12, 12, 12, 1))
     features = {
-        'targets_mask': tf.to_float(tf.not_equal(targets, 0))
+        'targets_mask': tf.to_float(tf.ones([12, 12]))
     }
     with self.test_session() as session:
       scores, _ = metrics.padded_neg_log_perplexity_with_masking(
@@ -319,6 +339,20 @@ class MetricsTest(tf.test.TestCase):
       _ = session.run(a_op)
       actual = session.run(a)
     self.assertAlmostEqual(actual, expected, places=6)
+
+  def testPearsonCorrelationCoefficient(self):
+    predictions = np.random.rand(12, 1)
+    targets = np.random.rand(12, 1)
+
+    expected = np.corrcoef(np.squeeze(predictions), np.squeeze(targets))[0][1]
+    with self.test_session() as session:
+      pearson, _ = metrics.pearson_correlation_coefficient(
+          tf.constant(predictions, dtype=tf.float32),
+          tf.constant(targets, dtype=tf.float32))
+      session.run(tf.global_variables_initializer())
+      session.run(tf.local_variables_initializer())
+      actual = session.run(pearson)
+    self.assertAlmostEqual(actual, expected)
 
 
 if __name__ == '__main__':

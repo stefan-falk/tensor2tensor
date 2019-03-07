@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2018 The Tensor2Tensor Authors.
+# Copyright 2019 The Tensor2Tensor Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -212,12 +212,27 @@ class Text2TextProblem(problem.Problem):
 
   @property
   def vocab_filename(self):
+    other_problem = self.use_vocab_from_other_problem
+    if other_problem:
+      return other_problem.vocab_filename
     if self.vocab_type == VocabType.SUBWORD:
       return "vocab.%s.%d.%s" % (self.dataset_filename(),
                                  self.approx_vocab_size,
                                  VocabType.SUBWORD)
     else:
       return "vocab.%s.%s" % (self.dataset_filename(), VocabType.TOKEN)
+
+  @property
+  def use_vocab_from_other_problem(self):
+    """Optional - use the vocabulary from a different problem.
+
+    TODO(noam): problems should override this method instead of overriding
+    vocab_filename(), so as to generate the correct vocabulary. Fix everywhere.
+
+    Returns:
+       a Text2TextProblem instance or None
+    """
+    return None
 
   def get_or_create_vocab(self, data_dir, tmp_dir, force_get=False):
     if self.vocab_type == VocabType.CHARACTER:
@@ -227,6 +242,9 @@ class Text2TextProblem(problem.Problem):
         vocab_filepath = os.path.join(data_dir, self.vocab_filename)
         encoder = text_encoder.SubwordTextEncoder(vocab_filepath)
       else:
+        other_problem = self.use_vocab_from_other_problem
+        if other_problem:
+          return other_problem.get_or_create_vocab(data_dir, tmp_dir, force_get)
         encoder = generator_utils.get_or_generate_vocab_inner(
             data_dir, self.vocab_filename, self.approx_vocab_size,
             self.generate_text_for_vocab(data_dir, tmp_dir),
@@ -241,6 +259,32 @@ class Text2TextProblem(problem.Problem):
       raise ValueError(
           "Unrecognized VocabType: %s" % str(self.vocab_type))
     return encoder
+
+  def _pack_fn(self):
+    """For packed datasets, returns a function to pack examples.
+
+    Returns:
+      None or a function from list of TFRecords to list of TFRecords
+    """
+    if not self.packed_length:
+      return None
+    def my_fn(records):
+      """Function from list of TFRecords to list of TFRecords."""
+      examples = []
+      for record in records:
+        x = tf.train.Example()
+        x.ParseFromString(record)
+        example_dict = {}
+        if self.has_inputs:
+          example_dict["inputs"] = [
+              int(i) for i in x.features.feature["inputs"].int64_list.value]
+        example_dict["targets"] = [
+            int(i) for i in x.features.feature["targets"].int64_list.value]
+        examples.append(example_dict)
+      examples = list(self._maybe_pack_examples(examples))
+      return [
+          generator_utils.to_example(x).SerializeToString() for x in examples]
+    return my_fn
 
   def _maybe_pack_examples(self, generator):
     """Wraps generator with packer if self.packed_length."""
@@ -262,7 +306,9 @@ class Text2TextProblem(problem.Problem):
     generator = self.generate_samples(data_dir, tmp_dir, dataset_split)
     encoder = self.get_or_create_vocab(data_dir, tmp_dir)
     return text2text_generate_encoded(generator, encoder,
-                                      has_inputs=self.has_inputs)
+                                      has_inputs=self.has_inputs,
+                                      inputs_prefix=self.inputs_prefix,
+                                      targets_prefix=self.targets_prefix)
 
   @property
   def max_subtoken_length(self):
@@ -284,6 +330,16 @@ class Text2TextProblem(problem.Problem):
   def already_shuffled(self):
     return False
 
+  @property
+  def inputs_prefix(self):
+    """String to prepend to inputs before tokenization."""
+    return ""
+
+  @property
+  def targets_prefix(self):
+    """String to prepend to targets before tokenization."""
+    return ""
+
   def generate_data(self, data_dir, tmp_dir, task_id=-1):
 
     filepath_fns = {
@@ -302,36 +358,34 @@ class Text2TextProblem(problem.Problem):
     if self.is_generate_per_split:
       for split, paths in split_paths:
         generator_utils.generate_files(
-            self._maybe_pack_examples(
-                self.generate_encoded_samples(data_dir, tmp_dir, split)), paths)
+            self.generate_encoded_samples(data_dir, tmp_dir, split), paths)
     else:
       generator_utils.generate_files(
-          self._maybe_pack_examples(
-              self.generate_encoded_samples(
-                  data_dir, tmp_dir, problem.DatasetSplit.TRAIN)), all_paths)
+          self.generate_encoded_samples(
+              data_dir, tmp_dir, problem.DatasetSplit.TRAIN), all_paths)
 
-    generator_utils.shuffle_dataset(all_paths)
+    generator_utils.shuffle_dataset(all_paths, extra_fn=self._pack_fn())
 
   def hparams(self, defaults, unused_model_hparams):
     p = defaults
     p.stop_at_eos = int(True)
 
-    p.modality = {"targets": modalities.SymbolModality}
+    p.modality = {"targets": modalities.ModalityType.SYMBOL}
     p.vocab_size = {"targets": self._encoders["targets"].vocab_size}
     if self.has_inputs:
-      p.modality["inputs"] = modalities.SymbolModality
+      p.modality["inputs"] = modalities.ModalityType.SYMBOL
       p.vocab_size["inputs"] = self._encoders["inputs"].vocab_size
     if self.vocab_type == VocabType.CHARACTER:
       p.loss_multiplier = 2.0
 
     if self.packed_length:
       if self.has_inputs:
-        p.modality["inputs_segmentation"] = modalities.IdentityModality
-        p.modality["inputs_position"] = modalities.IdentityModality
+        p.modality["inputs_segmentation"] = modalities.ModalityType.IDENTITY
+        p.modality["inputs_position"] = modalities.ModalityType.IDENTITY
         p.vocab_size["inputs_segmentation"] = None
         p.vocab_size["inputs_position"] = None
-      p.modality["targets_segmentation"] = modalities.IdentityModality
-      p.modality["targets_position"] = modalities.IdentityModality
+      p.modality["targets_segmentation"] = modalities.ModalityType.IDENTITY
+      p.modality["targets_position"] = modalities.ModalityType.IDENTITY
       p.vocab_size["targets_segmentation"] = None
       p.vocab_size["targets_position"] = None
 
@@ -402,7 +456,7 @@ class QuestionAndContext2TextProblem(Text2TextProblem):
     (super(QuestionAndContext2TextProblem, self)
      .hparams(defaults, unused_model_hparams))
     p = defaults
-    p.modality["context"] = modalities.SymbolModality
+    p.modality["context"] = modalities.ModalityType.SYMBOL
     p.vocab_size["context"] = self._encoders["context"].vocab_size
     if self.packed_length:
       raise NotImplementedError("QuestionAndContext2Text does not "
@@ -506,8 +560,8 @@ class Text2ClassProblem(Text2TextProblem):
 
   def hparams(self, defaults, unused_model_hparams):
     p = defaults
-    p.modality = {"inputs": modalities.SymbolModality,
-                  "targets": modalities.ClassLabelModality}
+    p.modality = {"inputs": modalities.ModalityType.SYMBOL,
+                  "targets": modalities.ModalityType.CLASS_LABEL}
     p.vocab_size = {"inputs": self._encoders["inputs"].vocab_size,
                     "targets": self.num_classes}
 
@@ -623,14 +677,16 @@ def text2text_txt_tab_iterator(txt_path):
 def text2text_generate_encoded(sample_generator,
                                vocab,
                                targets_vocab=None,
-                               has_inputs=True):
+                               has_inputs=True,
+                               inputs_prefix="",
+                               targets_prefix=""):
   """Encode Text2Text samples from the generator with the vocab."""
   targets_vocab = targets_vocab or vocab
   for sample in sample_generator:
     if has_inputs:
-      sample["inputs"] = vocab.encode(sample["inputs"])
+      sample["inputs"] = vocab.encode(inputs_prefix + sample["inputs"])
       sample["inputs"].append(text_encoder.EOS_ID)
-    sample["targets"] = targets_vocab.encode(sample["targets"])
+    sample["targets"] = targets_vocab.encode(targets_prefix + sample["targets"])
     sample["targets"].append(text_encoder.EOS_ID)
     yield sample
 
@@ -1153,7 +1209,9 @@ class DistributedText2TextProblem(Text2TextProblem):
     generator = self.generate_samples(data_dir, tmp_dir, dataset_split,
                                       input_files)
     return text2text_generate_encoded(
-        generator, encoder, has_inputs=self.has_inputs)
+        generator, encoder, has_inputs=self.has_inputs,
+        inputs_prefix=self.inputs_prefix,
+        targets_prefix=self.targets_prefix)
 
   def generate_data(self, data_dir, tmp_dir, task_id=-1):
     # task_id should be in [0, self.num_output_shards)
@@ -1169,10 +1227,9 @@ class DistributedText2TextProblem(Text2TextProblem):
 
     # Actually generate examples.
     generator_utils.generate_files(
-        self._maybe_pack_examples(
-            self.generate_encoded_samples(
-                data_dir, tmp_dir, split, input_files)),
+        self.generate_encoded_samples(
+            data_dir, tmp_dir, split, input_files),
         [output_file])
 
     # Shuffle the output.
-    generator_utils.shuffle_dataset([output_file])
+    generator_utils.shuffle_dataset([output_file], extra_fn=self._pack_fn())
