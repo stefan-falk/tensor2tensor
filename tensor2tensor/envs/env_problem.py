@@ -23,6 +23,7 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+import gym
 from gym.core import Env
 import numpy as np
 import six
@@ -31,7 +32,6 @@ from tensor2tensor.data_generators import problem
 from tensor2tensor.envs import gym_spaces_utils
 from tensor2tensor.envs import trajectory
 from tensor2tensor.layers import modalities
-from tensor2tensor.rl import gym_utils
 import tensorflow as tf
 
 # Names for data fields in stored tf.Examples.
@@ -56,9 +56,11 @@ class EnvProblem(Env, problem.Problem):
   Subclasses *should* override the following functions, since they are used in
   the `hparams` function to return modalities and vocab_sizes.
   - input_modality
-  - input_input_vocab_size
+  - input_vocab_size
   - target_modality
   - target_vocab_size
+  - action_modality
+  - reward_modality
 
   NON NATIVELY BATCHED ENVS:
 
@@ -81,7 +83,7 @@ class EnvProblem(Env, problem.Problem):
   obs, rewards, dones, infos = ep.step(actions)
 
   # 4. Figure out which envs got done and reset only those.
-  ep.reset(indices=done_indices(dones))
+  ep.reset(indices=env_problem_utils.done_indices(dones))
 
   # 5. Go back to Step #3 to further interact with the env or just dump the
   # generated data to disk by calling:
@@ -119,24 +121,23 @@ class EnvProblem(Env, problem.Problem):
 
   - observation_space and action_space should be subclasses of gym.spaces
   - not all subclasses of gym.spaces are supported
-  - no support for continuous action spaces
 
   """
 
   def __init__(self,
                base_env_name=None,
-               base_env_kwargs=None,
                batch_size=None,
+               env_wrapper_fn=None,
                reward_range=(-np.inf, np.inf)):
     """Initializes this class by creating the envs and managing trajectories.
 
     Args:
-      base_env_name: (string) passed to `gym_utils.make_gym_env` to make the
-        underlying environment.
-      base_env_kwargs: (dict) passed to `gym_utils.make_gym_env` to make the
-        underlying environment.
-      batch_size: (int or None): How many envs to make in the non natively
+      base_env_name: (string) passed to `gym.make` to make the underlying
+        environment.
+      batch_size: (int or None) How many envs to make in the non natively
         batched mode.
+      env_wrapper_fn: (callable(env): env) Applies gym wrappers to the base
+        environment.
       reward_range: (tuple(number, number)) the first element is the minimum
         reward and the second is the maximum reward, used to clip and process
         the raw reward in `process_rewards`.
@@ -145,16 +146,9 @@ class EnvProblem(Env, problem.Problem):
     # Call the super's ctor.
     problem.Problem.__init__(self, was_reversed=False, was_copy=False)
 
-    # Name for the base environment, will be used in `gym_utils.make_gym_env` in
+    # Name for the base environment, will be used in `gym.make` in
     # the default implementation of `initialize_environments`.
     self._base_env_name = base_env_name
-
-    # Other arguments for initializing environments, will be used in
-    # `gym_utils.make_gym_env` in the default implementation of
-    # `initialize_environments`.
-    self._base_env_kwargs = base_env_kwargs
-    if not self._base_env_kwargs:
-      self._base_env_kwargs = {}
 
     # An env generates data when it is given actions by an agent which is either
     # a policy or a human -- this is supposed to be the `id` of the agent.
@@ -182,6 +176,8 @@ class EnvProblem(Env, problem.Problem):
     self._trajectories = None
 
     self._batch_size = None
+
+    self._env_wrapper_fn = env_wrapper_fn
 
     if batch_size is not None:
       self.initialize(batch_size=batch_size)
@@ -238,8 +234,8 @@ class EnvProblem(Env, problem.Problem):
         tf.logging.error("Env[%d] has action space [%s]", i, env.action_space)
       raise ValueError(err_str)
 
-  def initialize(self, batch_size=1):
-    self.initialize_environments(batch_size=batch_size)
+  def initialize(self, **kwargs):
+    self.initialize_environments(**kwargs)
 
     # Assert that *all* the above are now set, we should do this since
     # subclasses can override `initialize_environments`.
@@ -259,20 +255,12 @@ class EnvProblem(Env, problem.Problem):
     Args:
       batch_size: (int) Number of `self.base_env_name` envs to initialize.
     """
-
     assert batch_size >= 1
     self._batch_size = batch_size
 
-    max_steps = self._base_env_kwargs.get("rl_env_max_episode_steps", -1)
-    maxskip_env = self._base_env_kwargs.get("maxskip_env", False)
-
-    self._envs = []
-    for _ in range(batch_size):
-      self._envs.append(
-          gym_utils.make_gym_env(
-              self.base_env_name,
-              rl_env_max_episode_steps=max_steps,
-              maxskip_env=maxskip_env))
+    self._envs = [gym.make(self.base_env_name) for _ in range(batch_size)]
+    if self._env_wrapper_fn is not None:
+      self._envs = list(map(self._env_wrapper_fn, self._envs))
 
     # If self.observation_space and self.action_space aren't None, then it means
     # that this is a re-initialization of this class, in that case make sure
@@ -362,9 +350,7 @@ class EnvProblem(Env, problem.Problem):
     return (min_reward != -np.inf) and (max_reward != np.inf)
 
   def process_rewards(self, rewards):
-    """Clips, rounds, adds the min_reward and changes to integer type.
-
-    The result of the above is that the new minimum is 0.
+    """Clips, rounds, and changes to integer type.
 
     Args:
       rewards: numpy array of raw (float) rewards.
@@ -375,8 +361,8 @@ class EnvProblem(Env, problem.Problem):
 
     min_reward, max_reward = self.reward_range
 
-    # Clips at min and max reward and shift by min (so new min is 0)
-    rewards = np.clip(rewards, min_reward, max_reward) - min_reward
+    # Clips at min and max reward.
+    rewards = np.clip(rewards, min_reward, max_reward)
     # Round to (nearest) int and convert to integral type.
     rewards = np.around(rewards, decimals=0).astype(np.int64)
     return rewards
@@ -402,10 +388,10 @@ class EnvProblem(Env, problem.Problem):
     # Pre-conditions: reward range is finite.
     #               : processed rewards are discrete.
     if not self.is_reward_range_finite:
-      tf.logging.error("Infinite reward range, `num_rewards returning None`")
+      tf.logging.warn("Infinite reward range, `num_rewards returning None`")
       return None
     if not self.is_processed_rewards_discrete:
-      tf.logging.error(
+      tf.logging.warn(
           "Processed rewards are not discrete, `num_rewards` returning None")
       return None
 
@@ -414,6 +400,10 @@ class EnvProblem(Env, problem.Problem):
 
   @property
   def input_modality(self):
+    raise NotImplementedError
+
+  @property
+  def reward_modality(self):
     raise NotImplementedError
 
   @property
@@ -481,21 +471,35 @@ class EnvProblem(Env, problem.Problem):
     # rest being the dimensionality of the observation.
     return np.stack([self._envs[index].reset() for index in indices])
 
+  def truncate(self, indices=None):
+    """Truncates trajectories at the specified indices."""
+
+    if indices is None:
+      indices = np.arange(self.batch_size)
+
+    self.trajectories.truncate_trajectories(indices)
+
   def reset(self, indices=None):
     """Resets environments at given indices.
 
     Subclasses should override _reset to do the actual reset if something other
     than the default implementation is desired.
 
+    NOTE: With `indices` as None the recorded trajectories are also erased since
+        the expecation is that we want to re-use the whole env class from
+        scratch.
+
     Args:
-      indices: Indices of environments to reset. If None all envs are reset.
+      indices: Indices of environments to reset. If None all envs are reset as
+          well as trajectories are erased.
 
     Returns:
       Batch of initial observations of reset environments.
     """
 
     if indices is None:
-      indices = np.arange(self.trajectories.batch_size)
+      self.trajectories.reset_batch_trajectories()
+      indices = np.arange(self.batch_size)
 
     # If this is empty (not None) then don't do anything, no env was done.
     if indices.size == 0:
@@ -507,9 +511,27 @@ class EnvProblem(Env, problem.Problem):
     processed_observations = self.process_observations(observations)
 
     # Record history.
-    self.trajectories.reset(indices, observations)
+    self.trajectories.reset(indices, processed_observations)
 
     return processed_observations
+
+  def render(self, mode="human", indices=None):
+    """Calls render with the given mode on the specified indices.
+
+    Args:
+      mode: rendering mode.
+      indices: array of indices, calls render on everything if indices is None.
+
+    Returns:
+      a list of return values from the environments rendered.
+    """
+
+    if indices is None:
+      indices = np.arange(self.batch_size)
+    ret_vals = []
+    for index in indices:
+      ret_vals.append(self._envs[index].render(mode=mode))
+    return ret_vals
 
   def _step(self, actions):
     """Takes a step in all environments, shouldn't pre-process or record.
@@ -575,11 +597,6 @@ class EnvProblem(Env, problem.Problem):
 
     return processed_observations, processed_rewards, dones, infos
 
-  @staticmethod
-  def done_indices(dones):
-    """Calculates the indices where dones has True."""
-    return np.argwhere(dones).squeeze(axis=1)
-
   def example_reading_spec(self):
     """Data fields to store on disk and their decoders."""
 
@@ -601,10 +618,10 @@ class EnvProblem(Env, problem.Problem):
         ACTION_FIELD: self.action_spec,
     }
 
-    # `data_items_to_decoders` can be None, it will be set to the appropriate
-    # decoder dict in `Problem.decode_example`
-    # TODO(afrozm): Verify that we don't need any special decoder or anything.
-    data_items_to_decoders = None
+    data_items_to_decoders = {
+        field: tf.contrib.slim.tfexample_decoder.Tensor(field)
+        for field in data_fields
+    }
 
     return data_fields, data_items_to_decoders
 
@@ -623,10 +640,10 @@ class EnvProblem(Env, problem.Problem):
     p.modality.update({
         "inputs": self.input_modality,
         "targets": self.target_modality,
-        "input_reward": modalities.ModalityType.SYMBOL_WEIGHTS_ALL,
-        "target_reward": modalities.ModalityType.SYMBOL_WEIGHTS_ALL,
-        "input_action": modalities.ModalityType.SYMBOL_WEIGHTS_ALL,
-        "target_action": modalities.ModalityType.SYMBOL_WEIGHTS_ALL,
+        "input_reward": self.reward_modality,
+        "target_reward": self.reward_modality,
+        "input_action": self.action_modality,
+        "target_action": self.action_modality,
         "target_policy": modalities.ModalityType.IDENTITY,
         "target_value": modalities.ModalityType.IDENTITY,
     })
@@ -651,6 +668,8 @@ class EnvProblem(Env, problem.Problem):
 
   @agent_id.setter
   def agent_id(self, agent_id):
+    # Lets us call agent_id with integers that we increment.
+    agent_id = str(agent_id)
     # We use `-` in self.dataset_filename, disallow it here for convenience.
     if "-" in agent_id:
       raise ValueError("agent_id shouldn't have - in it.")
@@ -674,7 +693,7 @@ class EnvProblem(Env, problem.Problem):
       # Skip writing trajectories that have only a single time-step -- this
       # could just be a repeated reset.
 
-      if single_trajectory.num_time_steps() <= 1:
+      if single_trajectory.num_time_steps <= 1:
         continue
 
       for index, time_step in enumerate(single_trajectory.time_steps):
@@ -689,14 +708,13 @@ class EnvProblem(Env, problem.Problem):
         if not processed_reward:
           processed_reward = 0
 
-        if time_step.action:
-          action = gym_spaces_utils.gym_space_encode(self.action_space,
-                                                     time_step.action)
-        else:
+        action = time_step.action
+        if action is None:
           # The last time-step doesn't have action, and this action shouldn't be
           # used, gym's spaces have a `sample` function, so let's just sample an
           # action and use that.
-          action = [self.action_space.sample()]
+          action = self.action_space.sample()
+        action = gym_spaces_utils.gym_space_encode(self.action_space, action)
 
         if six.PY3:
           # py3 complains that, to_example cannot handle np.int64 !
@@ -716,10 +734,11 @@ class EnvProblem(Env, problem.Problem):
             TIMESTEP_FIELD: [index],
             ACTION_FIELD:
                 action,
-            RAW_REWARD_FIELD:
-                [float(raw_reward)],  # to_example errors on np.float32
+            # to_example errors on np.float32
+            RAW_REWARD_FIELD: [float(raw_reward)],
             PROCESSED_REWARD_FIELD: [processed_reward],
-            DONE_FIELD: [int(time_step.done)],  # to_example doesn't know bools
+            # to_example doesn't know bools
+            DONE_FIELD: [int(time_step.done)],
             OBSERVATION_FIELD:
                 gym_spaces_utils.gym_space_encode(self.observation_space,
                                                   time_step.observation),
@@ -744,7 +763,7 @@ class EnvProblem(Env, problem.Problem):
 
     # Write the completed data into these files
 
-    num_completed_trajectories = len(self.trajectories.completed_trajectories)
+    num_completed_trajectories = self.trajectories.num_completed_trajectories
     num_shards = len(files_list)
     if num_completed_trajectories < num_shards:
       tf.logging.warning(
@@ -770,8 +789,8 @@ class EnvProblem(Env, problem.Problem):
   def print_state(self):
     for t in self.trajectories.trajectories:
       print("---------")
-      if not t.is_active():
+      if not t.is_active:
         print("trajectory isn't active.")
         continue
-      last_obs = t.last_time_step().observation
+      last_obs = t.last_time_step.observation
       print(str(last_obs))

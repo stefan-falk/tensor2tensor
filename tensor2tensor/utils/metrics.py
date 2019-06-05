@@ -22,6 +22,7 @@ import numpy as np
 import six
 
 from tensor2tensor.layers import common_layers
+from tensor2tensor.layers import modalities
 from tensor2tensor.utils import bleu_hook
 from tensor2tensor.utils import rouge
 from tensor2tensor.utils import sari_hook
@@ -50,6 +51,7 @@ class Metrics(object):
   ROUGE_2_F = "rouge_2_fscore"
   ROUGE_L_F = "rouge_L_fscore"
   EDIT_DISTANCE = "edit_distance"
+  PREFIX_ACCURACY = "prefix_accuracy"
   WORD_ERROR_RATE = "word_error_rate"
   SET_PRECISION = "set_precision"
   SET_RECALL = "set_recall"
@@ -194,6 +196,41 @@ def padded_sequence_accuracy(predictions,
     axis = list(range(1, len(outputs.get_shape())))
     correct_seq = 1.0 - tf.minimum(1.0, tf.reduce_sum(not_correct, axis=axis))
     return correct_seq, tf.constant(1.0)
+
+
+def prefix_accuracy(predictions,
+                    labels,
+                    weights_fn=common_layers.weights_nonzero):
+  """Average # of correct tokens at start of sequences, ignoring padding 0s.
+
+  See section 4.3 of Learning to Transduce with Unbounded Memory,
+  Grefenstette et al., 2015.
+
+  Args:
+    predictions: Tensor of shape [`batch_size`, `length`, 1, `num_classes`] and
+        type tf.float32 representing the logits, 0-padded.
+    labels: Tensor of shape [`batch_size`, `length`, 1, 1] and type tf.int32
+        representing the labels of same length as logits and 0-padded.
+    weights_fn: ignored. The weights returned are the total length of the ground
+        truth labels, excluding 0-paddings.
+
+  Returns:
+    (prefix accuracy, 1.0)
+
+  Raises:
+    ValueError: if weights_fn is not common_layers.weights_nonzero.
+  """
+  if weights_fn is not common_layers.weights_nonzero:
+    raise ValueError("Only weights_nonzero can be used for this metric.")
+
+  predictions = tf.to_int32(tf.squeeze(tf.argmax(predictions, axis=-1), axis=2))
+  labels = tf.squeeze(labels, axis=(2, 3))
+  seq_len = tf.reduce_sum(
+      tf.cast(tf.not_equal(labels, tf.constant(0)), dtype=tf.float32), axis=1)
+  matching_elements = tf.equal(labels, predictions)
+  prefix_len = tf.reduce_sum(
+      tf.cumprod(tf.cast(matching_elements, tf.float32), axis=1), axis=1)
+  return tf.reduce_mean(prefix_len / seq_len), tf.constant(1.0)
 
 
 def sequence_edit_distance(predictions,
@@ -599,7 +636,7 @@ def create_evaluation_metrics(problems, model_hparams):
   def weights_fn_for_mp(problem_task_id):
     return lambda x: common_layers.weights_multi_problem(x, problem_task_id)
 
-  eval_metrics = dict()
+  eval_metrics = {}
   for problem_instance in problems:
     problem_name = problem_instance.name
     if problem_instance.was_reversed:
@@ -613,7 +650,9 @@ def create_evaluation_metrics(problems, model_hparams):
       tm = {"targets": tm}
 
     for target_name, modality in six.iteritems(tm):
-      weights_fn = modality.targets_weights_fn
+      weights_fn = model_hparams.weights_fn.get(
+          "targets",
+          modalities.get_weights_fn(modality))
       if hasattr(model_hparams.problem, "task_list"):
         ptid = problem_instance.task_id  # pylint: disable=cell-var-from-loop
         weights_fn = weights_fn_for_mp(ptid)
@@ -638,9 +677,12 @@ def create_evaluation_metrics(problems, model_hparams):
 def create_eager_metrics_for_problem(problem, model_hparams):
   """See create_eager_metrics."""
   metric_fns = problem.eval_metric_fns(model_hparams)
-  tm = problem.get_hparams(model_hparams).modality["targets"]
-  return create_eager_metrics_internal(
-      metric_fns, weights_fn=tm.targets_weights_fn)
+  problem_hparams = problem.get_hparams(model_hparams)
+  target_modality = problem_hparams.modality["targets"]
+  weights_fn = model_hparams.weights_fn.get(
+      "targets",
+      modalities.get_weights_fn(target_modality))
+  return create_eager_metrics_internal(metric_fns, weights_fn=weights_fn)
 
 
 def create_eager_metrics(metric_names, weights_fn=common_layers.weights_all):
@@ -675,7 +717,7 @@ def create_eager_metrics_internal(metric_fns,
     (accum_fn(predictions, targets) => None,
      result_fn() => dict<str metric_name, float avg_val>
   """
-  tfe_metrics = dict()
+  tfe_metrics = {}
 
   for name in metric_fns:
     tfe_metrics[name] = tfe.metrics.Mean(name=name)
@@ -840,7 +882,6 @@ METRICS_FNS = {
     Metrics.ROUGE_2_F: rouge.rouge_2_fscore,
     Metrics.ROUGE_L_F: rouge.rouge_l_fscore,
     Metrics.EDIT_DISTANCE: sequence_edit_distance,
-    Metrics.WORD_ERROR_RATE: word_error_rate,
     Metrics.SOFTMAX_CROSS_ENTROPY_ONE_HOT: softmax_cross_entropy_one_hot,
     Metrics.SIGMOID_ACCURACY_ONE_HOT: sigmoid_accuracy_one_hot,
     Metrics.SIGMOID_RECALL_ONE_HOT: sigmoid_recall_one_hot,

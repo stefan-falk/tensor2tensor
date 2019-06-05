@@ -47,15 +47,17 @@ _ENDE_EVAL_DATASETS = [
         ("dev/newstest2013.en", "dev/newstest2013.de")
     ],
 ]
+_ENDE_PARACRAWL_DATASETS = [
+    [
+        "https://s3.amazonaws.com/web-language-models/paracrawl/release4/en-de.bicleaner07.tmx.gz",  # pylint: disable=line-too-long
+        ("tmx", "en-de.bicleaner07.tmx.gz")
+    ]
+]
 
 
 @registry.register_problem
-class TranslateEndeWmt8k(translate.TranslateProblem):
-  """Problem spec for WMT En-De translation."""
-
-  @property
-  def approx_vocab_size(self):
-    return 2**13  # 8192
+class TranslateEndeWmt32k(translate.TranslateProblem):
+  """En-de translation trained on WMT corpus."""
 
   @property
   def additional_training_datasets(self):
@@ -69,16 +71,21 @@ class TranslateEndeWmt8k(translate.TranslateProblem):
 
 
 @registry.register_problem
-class TranslateEndeWmt32k(TranslateEndeWmt8k):
+class TranslateEndeWmtClean32k(TranslateEndeWmt32k):
+  """En-de translation trained on WMT with further cleaning."""
 
   @property
-  def approx_vocab_size(self):
-    return 2**15  # 32768
+  def use_vocab_from_other_problem(self):
+    return TranslateEndeWmt32k()
+
+  @property
+  def datatypes_to_clean(self):
+    return ["txt"]
 
 
 @registry.register_problem
-class TranslateEndeWmtParacrawlBicleaner32k(TranslateEndeWmt32k):
-  """WMT en-de corpus with extra data from Paracrawl, cleaned with Bicleaner."""
+class TranslateEndePc32k(translate.TranslateProblem):
+  """En-de translation trained on Paracrawl (bicleaner corpus)."""
 
   @property
   def use_vocab_from_other_problem(self):
@@ -86,9 +93,63 @@ class TranslateEndeWmtParacrawlBicleaner32k(TranslateEndeWmt32k):
 
   @property
   def additional_training_datasets(self):
-    paracrawl = "https://s3.amazonaws.com/web-language-models/paracrawl/"
-    return [(paracrawl + "release3/en-de.bicleaner07.tmx.gz",
-             ("tmx", "en-de.bicleaner07.tmx.gz"))]
+    """Allow subclasses to add training datasets."""
+    return []
+
+  def source_data_files(self, dataset_split):
+    train = dataset_split == problem.DatasetSplit.TRAIN
+    train_datasets = (
+        _ENDE_PARACRAWL_DATASETS + self.additional_training_datasets)
+    return train_datasets if train else _ENDE_EVAL_DATASETS
+
+
+@registry.register_problem
+class TranslateEndePcClean32k(TranslateEndePc32k):
+  """En-de translation trained on Paracrawl with further cleaning."""
+
+  @property
+  def datatypes_to_clean(self):
+    return ["tmx"]
+
+
+@registry.register_problem
+class TranslateEndeWmtPc32k(TranslateEndeWmt32k):
+  """En-de translation trained on WMT plus Paracrawl."""
+
+  @property
+  def use_vocab_from_other_problem(self):
+    return TranslateEndeWmt32k()
+
+  @property
+  def additional_training_datasets(self):
+    return _ENDE_PARACRAWL_DATASETS
+
+
+@registry.register_problem
+class TranslateEndeWmtCleanPc32k(TranslateEndeWmtPc32k):
+  """En-de translation trained on cleaned WMT plus Paracrawl."""
+
+  @property
+  def datatypes_to_clean(self):
+    return ["txt"]
+
+
+@registry.register_problem
+class TranslateEndeWmtPcClean32k(TranslateEndeWmtPc32k):
+  """En-de translation trained on WMT plus cleaned Paracrawl."""
+
+  @property
+  def datatypes_to_clean(self):
+    return ["tmx"]
+
+
+@registry.register_problem
+class TranslateEndeWmtCleanPcClean32k(TranslateEndeWmtPcClean32k):
+  """En-de translation trained on cleaned WMT plus cleaned Paracrawl."""
+
+  @property
+  def datatypes_to_clean(self):
+    return ["txt", "tmx"]
 
 
 @registry.register_problem
@@ -101,6 +162,15 @@ class TranslateEndeWmt32kPacked(TranslateEndeWmt32k):
   @property
   def use_vocab_from_other_problem(self):
     return TranslateEndeWmt32k()
+
+
+@registry.register_problem
+class TranslateEndeWmt8k(TranslateEndeWmt32k):
+  """Problem spec for WMT En-De translation."""
+
+  @property
+  def approx_vocab_size(self):
+    return 2**13  # 8192
 
 
 @registry.register_problem
@@ -152,5 +222,3 @@ class TranslateEndeWmtMulti64kPacked1k(TranslateEndeWmtMulti64k):
   @property
   def targets_prefix(self):
     return "translate German English "
-
-

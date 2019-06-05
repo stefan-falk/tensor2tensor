@@ -100,7 +100,8 @@ def decode(estimator, hparams, decode_hp):
         hparams,
         decode_hp,
         decode_to_file=FLAGS.decode_to_file,
-        dataset_split="test" if FLAGS.eval_use_test_set else None)
+        dataset_split="test" if FLAGS.eval_use_test_set else None,
+        checkpoint_path=FLAGS.checkpoint_path)
 
 
 def score_file(filename):
@@ -128,8 +129,11 @@ def score_file(filename):
 
   with tf.Session() as sess:
     # Load weights from checkpoint.
-    ckpts = tf.train.get_checkpoint_state(FLAGS.output_dir)
-    ckpt = ckpts.model_checkpoint_path
+    if FLAGS.checkpoint_path is None:
+      ckpts = tf.train.get_checkpoint_state(FLAGS.output_dir)
+      ckpt = ckpts.model_checkpoint_path
+    else:
+      ckpt = FLAGS.checkpoint_path
     saver.restore(sess, ckpt)
     # Run on each line.
     with tf.gfile.Open(filename) as f:

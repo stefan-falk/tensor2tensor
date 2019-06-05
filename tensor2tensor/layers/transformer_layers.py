@@ -27,6 +27,11 @@ from tensor2tensor.utils import mlperf_log
 import tensorflow as tf
 
 
+# TODO(lukaszkaiser): remove this function when not needed any more.
+def layers():
+  return common_layers.layers()
+
+
 def transformer_prepare_encoder(inputs, target_space, hparams, features=None):
   """Prepare one shard of the model for the encoder.
 
@@ -178,6 +183,14 @@ def transformer_encoder(encoder_input,
     for layer in range(hparams.num_encoder_layers or hparams.num_hidden_layers):
       with tf.variable_scope("layer_%d" % layer):
         with tf.variable_scope("self_attention"):
+          if layer < hparams.get("num_area_layers", 0):
+            max_area_width = hparams.get("max_area_width", 1)
+            max_area_height = hparams.get("max_area_height", 1)
+            memory_height = hparams.get("memory_height", 1)
+          else:
+            max_area_width = 1
+            max_area_height = 1
+            memory_height = 1
           y = common_attention.multihead_attention(
               common_layers.layer_preprocess(x, hparams),
               None,
@@ -198,7 +211,16 @@ def transformer_encoder(encoder_input,
               max_length=hparams.get("max_length"),
               vars_3d=hparams.get("attention_variables_3d"),
               activation_dtype=hparams.get("activation_dtype", "float32"),
-              weight_dtype=hparams.get("weight_dtype", "float32"))
+              weight_dtype=hparams.get("weight_dtype", "float32"),
+              hard_attention_k=hparams.get("hard_attention_k", 0),
+              gumbel_noise_weight=hparams.get("gumbel_noise_weight", 0.0),
+              max_area_width=max_area_width,
+              max_area_height=max_area_height,
+              memory_height=memory_height,
+              area_key_mode=hparams.get("area_key_mode", "none"),
+              area_value_mode=hparams.get("area_value_mode", "none"),
+              training=(hparams.get("mode", tf.estimator.ModeKeys.TRAIN)
+                        == tf.estimator.ModeKeys.TRAIN))
           x = common_layers.layer_postprocess(x, y, hparams)
         with tf.variable_scope("ffn"):
           y = transformer_ffn_layer(
@@ -216,170 +238,6 @@ def transformer_encoder(encoder_input,
         key=mlperf_log.MODEL_HP_NORM,
         value={"hidden_size": hparams.hidden_size})
     return common_layers.layer_preprocess(x, hparams)
-
-
-def evolved_transformer_encoder(encoder_input,
-                                encoder_self_attention_bias,
-                                hparams,
-                                name="encoder",
-                                nonpadding=None,
-                                save_weights_to=None,
-                                make_image_summary=True,
-                                losses=None,
-                                attn_bias_for_padding=None):
-  """Evolved Transformer encoder. See arxiv.org/abs/1901.11117 for more details.
-
-  Note: Pad remover is not supported.
-
-  Args:
-    encoder_input: a Tensor.
-    encoder_self_attention_bias: bias Tensor for self-attention (see
-      common_attention.attention_bias()).
-    hparams: hyperparameters for model.
-    name: a string.
-    nonpadding: optional Tensor with shape [batch_size, encoder_length]
-      indicating what positions are not padding.  This must either be passed in,
-      which we do for "packed" datasets, or inferred from
-      encoder_self_attention_bias.  The knowledge about padding is used for
-      pad_remover(efficiency) and to mask out padding in convolutional layers.
-    save_weights_to: an optional dictionary to capture attention weights for
-      visualization; the weights tensor will be appended there under a string
-      key created from the variable scope (including name).
-    make_image_summary: Whether to make an attention image summary.
-    losses: Not used.
-    attn_bias_for_padding: Padded attention bias in case a unidirectional
-      encoder is being used where future attention is masked.
-
-  Returns:
-    Tensor encoder output.
-  """
-  del losses
-
-  hidden_state = encoder_input
-  attention_dropout_broadcast_dims = (
-      common_layers.comma_separated_string_to_integer_list(
-          getattr(hparams, "attention_dropout_broadcast_dims", "")))
-
-  with tf.variable_scope(name):
-    if nonpadding is not None:
-      padding = 1.0 - nonpadding
-    else:
-      attention_bias = encoder_self_attention_bias
-      if attn_bias_for_padding is not None:
-        attention_bias = attn_bias_for_padding
-      padding = common_attention.attention_bias_to_padding(attention_bias)
-      nonpadding = 1.0 - padding
-
-    for layer in range(hparams.num_encoder_layers or hparams.num_hidden_layers):
-      with tf.variable_scope("layer_%d" % layer):
-
-        with tf.variable_scope("gated_linear_unit"):
-
-          residual_state = hidden_state
-          hidden_state = common_layers.layer_preprocess(hidden_state, hparams)
-
-          values = tf.layers.dense(hidden_state, hparams.hidden_size)
-          gates = tf.layers.dense(
-              hidden_state, hparams.hidden_size, activation=tf.nn.sigmoid)
-          hidden_state = values * gates
-
-          hidden_state = common_layers.layer_postprocess(
-              residual_state, hidden_state, hparams)
-
-        with tf.variable_scope("conv_branches"):
-
-          residual_state = hidden_state
-          hidden_state = common_layers.layer_preprocess(hidden_state, hparams)
-          # Mask padding from conv layers.
-          mask = tf.tile(
-              tf.expand_dims(nonpadding, 2), [1, 1, hparams.hidden_size])
-          hidden_state *= mask
-
-          left_output_dim = int(hparams.hidden_size * 4)
-          left_state = tf.layers.dense(
-              hidden_state, left_output_dim, activation=tf.nn.relu)
-          left_state = tf.nn.dropout(left_state,
-                                     1 - hparams.layer_prepostprocess_dropout)
-
-          right_output_dim = int(hparams.hidden_size / 2)
-          right_state = tf.layers.conv1d(
-              hidden_state,
-              right_output_dim,
-              3,
-              padding="SAME",
-              name="standard_conv_3x1",
-              activation=tf.nn.relu)
-          right_state = tf.nn.dropout(right_state,
-                                      1 - hparams.layer_prepostprocess_dropout)
-
-          right_state = tf.pad(
-              right_state,
-              [[0, 0], [0, 0], [0, left_output_dim - right_output_dim]],
-              constant_values=0)
-          hidden_state = left_state + right_state
-
-          hidden_state = common_layers.layer_preprocess(hidden_state, hparams)
-          # Mask padding from conv layer.
-          mask = tf.tile(tf.expand_dims(nonpadding, 2), [1, 1, left_output_dim])
-          hidden_state *= mask
-
-          separable_conv_9x1 = tf.layers.SeparableConv1D(
-              right_output_dim, 9, padding="SAME", name="separable_conv_9x1")
-          hidden_state = separable_conv_9x1.apply(hidden_state)
-          hidden_state = tf.pad(
-              hidden_state,
-              [[0, 0], [0, 0], [0, hparams.hidden_size - right_output_dim]],
-              constant_values=0)
-
-          hidden_state = common_layers.layer_postprocess(
-              residual_state, hidden_state, hparams)
-
-        with tf.variable_scope("self_attention"):
-          residual_state = hidden_state
-          hidden_state = common_layers.layer_preprocess(hidden_state, hparams)
-
-          hidden_state = common_attention.multihead_attention(
-              hidden_state,
-              None,
-              encoder_self_attention_bias,
-              hparams.attention_key_channels or hparams.hidden_size,
-              hparams.attention_value_channels or hparams.hidden_size,
-              hparams.hidden_size,
-              hparams.num_heads,
-              hparams.attention_dropout,
-              attention_type=hparams.self_attention_type,
-              max_relative_position=hparams.max_relative_position,
-              heads_share_relative_embedding=(
-                  hparams.heads_share_relative_embedding),
-              add_relative_to_values=hparams.add_relative_to_values,
-              save_weights_to=save_weights_to,
-              make_image_summary=make_image_summary,
-              dropout_broadcast_dims=attention_dropout_broadcast_dims,
-              max_length=hparams.get("max_length"),
-              vars_3d=hparams.get("attention_variables_3d"),
-              activation_dtype=hparams.get("activation_dtype", "float32"),
-              weight_dtype=hparams.get("weight_dtype", "float32"))
-
-          hidden_state = common_layers.layer_postprocess(
-              residual_state, hidden_state, hparams)
-
-        with tf.variable_scope("dense_layers"):
-          residual_state = hidden_state
-          hidden_state = common_layers.layer_preprocess(hidden_state, hparams)
-
-          hidden_state = tf.layers.dense(
-              hidden_state, int(hparams.hidden_size * 4), activation=tf.nn.relu)
-          hidden_state = tf.nn.dropout(hidden_state,
-                                       1 - hparams.layer_prepostprocess_dropout)
-
-          hidden_state = tf.layers.dense(hidden_state, hparams.hidden_size)
-          hidden_state = common_layers.layer_postprocess(
-              residual_state, hidden_state, hparams)
-
-    # If normalization is done in layer_preprocess, then it should also be done
-    # on the output, since the output can grow very large, being the sum of
-    # a whole stack of unnormalized layer outputs.
-    return common_layers.layer_preprocess(hidden_state, hparams)
 
 
 def transformer_ffn_layer(x,

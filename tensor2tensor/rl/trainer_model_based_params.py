@@ -22,8 +22,8 @@ import six
 
 
 from tensor2tensor.data_generators import gym_env
+from tensor2tensor.utils import hparam
 from tensor2tensor.utils import registry
-from tensor2tensor.utils.hparam import HParams
 
 import tensorflow as tf
 
@@ -45,7 +45,7 @@ HP_SCOPES = ["loop", "model", "ppo"]
 
 
 def _rlmb_base():
-  return HParams(
+  return hparam.HParams(
       epochs=15,
       # Total frames used for training. This will be distributed evenly across
       # hparams.epochs.
@@ -89,6 +89,7 @@ def _rlmb_base():
       eval_rl_env_max_episode_steps=1000,
 
       game="pong",
+      sticky_actions=False,
       # If set, use this as the gym env name, instead of changing game mode etc.
       rl_env_name="",
       # Controls whether we should derive observation space, do some
@@ -110,6 +111,7 @@ def _rlmb_base():
       # This is only used for world-model evaluation currently, PolicyLearner
       # uses algorithm specific hparams to set this during training.
       simulated_rollout_length=50,
+      wm_policy_param_sharing=False,
 
       # To be overridden.
       base_algo="",
@@ -144,7 +146,6 @@ def rlmb_ppo_base():
       # Number of simulated environments to train on simultaneously.
       simulated_batch_size=16,
       eval_batch_size=32,
-      wm_policy_param_sharing=False,
 
       # Unused; number of PPO epochs is calculated from the real frame limit.
       real_ppo_epochs_num=0,
@@ -193,13 +194,17 @@ def rlmb_dqn_base():
       base_algo="dqn",
       base_algo_params="dqn_original_params",
       real_batch_size=1,
-      simulated_batch_size=1,
+      simulated_batch_size=16,
       dqn_agent_generates_trainable_dones=False,
       eval_batch_size=1,
       # Must be equal to dqn_time_limit for now
       simulated_rollout_length=simulated_rollout_length,
       dqn_time_limit=simulated_rollout_length,
       simulation_flip_first_random_for_beginning=False,
+      dqn_eval_episodes_num=3,
+
+      # TODO(kc): only for model-free compatibility, remove this
+      epochs_num=-1,
   )
   update_hparams(hparams, dqn_params)
   return hparams
@@ -320,6 +325,82 @@ def rlmb_base_stochastic_discrete():
 
 
 @registry.register_hparams
+def rlmb_base_stochastic_discrete_sticky_actions():
+  """Base setting, stochastic discrete model with sticky action environment."""
+  hparams = rlmb_base_stochastic_discrete()
+  hparams.sticky_actions = True
+  return hparams
+
+
+@registry.register_hparams
+def rlmb_base_stochastic_discrete_20k():
+  """Base setting with stochastic discrete model with 20k steps."""
+  hparams = rlmb_base_stochastic_discrete()
+  # Our num_real_env_frames should be divisible by real_ppo_epoch_length*epochs
+  # Here we decrease epochs to 6 and make this number 16*200*6.
+  hparams.num_real_env_frames = 19200
+  hparams.epochs = 6
+  hparams.ppo_epochs_num = 2000  # Increase PPO steps as we have less epochs.
+  return hparams
+
+
+@registry.register_hparams
+def rlmb_base_stochastic_discrete_50k():
+  """Base setting with stochastic discrete model with 50k steps."""
+  hparams = rlmb_base_stochastic_discrete()
+  hparams.num_real_env_frames = 48000
+  return hparams
+
+
+@registry.register_hparams
+def rlmb_base_stochastic_discrete_75k_model_steps():
+  """Base setting with stochastic discrete model with 75k WM steps."""
+  hparams = rlmb_base_stochastic_discrete()
+  hparams.model_train_steps = 15000 * 5
+  return hparams
+
+
+@registry.register_hparams
+def rlmb_base_stochastic_discrete_20k_model_steps():
+  """Base SD setting with 20k WM steps."""
+  hparams = rlmb_base_stochastic_discrete()
+  hparams.model_train_steps = 20000
+  return hparams
+
+
+@registry.register_hparams
+def rlmb_base_stochastic_discrete_30k_model_steps():
+  """Base SD setting with 20k WM steps."""
+  hparams = rlmb_base_stochastic_discrete()
+  hparams.model_train_steps = 30000
+  return hparams
+
+
+@registry.register_hparams
+def rlmb_base_stochastic_discrete_200k():
+  """Base setting with stochastic discrete model with 200k steps."""
+  hparams = rlmb_base_stochastic_discrete()
+  hparams.num_real_env_frames = 96000 * 2
+  return hparams
+
+
+@registry.register_hparams
+def rlmb_base_stochastic_discrete_500k():
+  """Base setting with stochastic discrete model with 500k steps."""
+  hparams = rlmb_base_stochastic_discrete()
+  hparams.num_real_env_frames = 96000 * 5
+  return hparams
+
+
+@registry.register_hparams
+def rlmb_base_stochastic_discrete_1m():
+  """Base setting with stochastic discrete model with 1M steps."""
+  hparams = rlmb_base_stochastic_discrete()
+  hparams.num_real_env_frames = 96000 * 10
+  return hparams
+
+
+@registry.register_hparams
 def rlmb_base_stochastic_discrete_param_sharing():
   """Base setting with stochastic discrete model with parameter sharing."""
   hparams = rlmb_base_stochastic_discrete()
@@ -401,18 +482,18 @@ def rlmb_long_stochastic_discrete_gamma90():
 
 
 @registry.register_hparams
-def rlmb_long_stochastic_discrete_3epochs():
+def rlmb_base_stochastic_discrete_3epochs():
   """Long setting with stochastic discrete model, changed epochs."""
-  hparams = rlmb_long_stochastic_discrete()
+  hparams = rlmb_base_stochastic_discrete()
   hparams.epochs = 3
   hparams.ppo_epochs_num = 2000
   return hparams
 
 
 @registry.register_hparams
-def rlmb_long_stochastic_discrete_1epoch():
+def rlmb_base_stochastic_discrete_1epoch():
   """Long setting with stochastic discrete model, changed epochs."""
-  hparams = rlmb_long_stochastic_discrete()
+  hparams = rlmb_base_stochastic_discrete()
   hparams.epochs = 1
   hparams.ppo_epochs_num = 3000
   return hparams
@@ -516,7 +597,7 @@ def rlmb_ppo_tiny():
   hparams = hparams.override_from_dict(_rlmb_tiny_overrides())
   update_hparams(hparams, dict(
       ppo_epochs_num=2,
-      ppo_epoch_length=hparams.simulated_rollout_length,
+      ppo_epoch_length=10,
       real_ppo_epoch_length=36,
       real_ppo_effective_num_agents=2,
       real_batch_size=1,
@@ -815,7 +896,7 @@ def merge_unscoped_hparams(scopes_and_hparams):
       scoped_key = "%s.%s" % (scope, key)
       merged_values[scoped_key] = value
 
-  return HParams(**merged_values)
+  return hparam.HParams(**merged_values)
 
 
 def split_scoped_hparams(scopes, merged_hparams):
@@ -828,7 +909,7 @@ def split_scoped_hparams(scopes, merged_hparams):
     split_values[scope][key] = value
 
   return [
-      HParams(**split_values[scope]) for scope in scopes
+      hparam.HParams(**split_values[scope]) for scope in scopes
   ]
 
 
@@ -882,7 +963,7 @@ def dynamic_register_hparams(name, hparams):
 
   @registry.register_hparams(name)
   def new_hparams_set():
-    return HParams(**hparams.values())
+    return hparam.HParams(**hparams.values())
 
   return new_hparams_set
 

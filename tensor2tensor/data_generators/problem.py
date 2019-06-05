@@ -19,17 +19,17 @@ from __future__ import division
 from __future__ import print_function
 
 import collections
+import functools
 import os
 import random
 import six
 
 from tensor2tensor.data_generators import generator_utils
 from tensor2tensor.data_generators import text_encoder
-from tensor2tensor.layers import modalities
 from tensor2tensor.utils import data_reader
+from tensor2tensor.utils import hparam
 from tensor2tensor.utils import metrics
 from tensor2tensor.utils import mlperf_log
-from tensor2tensor.utils.hparam import HParams
 
 import tensorflow as tf
 from tensorflow.contrib.tpu.python.tpu import tpu_config
@@ -131,7 +131,7 @@ class TaskID(object):
 
 
 def default_model_hparams():
-  return HParams(
+  return hparam.HParams(
       max_input_seq_length=0,
       max_target_seq_length=0,
       prepend_mode="none",
@@ -141,7 +141,7 @@ def default_model_hparams():
 
 def preprocess_example_common(example, mode, hparams):
   """Preprocessing steps common to all models."""
-  if hparams.max_input_seq_length > 0:
+  if "inputs" in example and hparams.max_input_seq_length > 0:
     example["inputs"] = example["inputs"][:hparams.max_input_seq_length]
   if hparams.prepend_mode != "none":
     if mode == tf.estimator.ModeKeys.PREDICT:
@@ -149,7 +149,7 @@ def preprocess_example_common(example, mode, hparams):
     else:
       example["targets"] = tf.concat(
           [example["inputs"], [0], example["targets"]], 0)
-  if hparams.max_target_seq_length > 0:
+  if "targets" in example and hparams.max_target_seq_length > 0:
     example["targets"] = example["targets"][:hparams.max_target_seq_length]
   if hparams.split_to_length:
     new_example = {}
@@ -357,17 +357,21 @@ class Problem(object):
         metrics.Metrics.ACC_PER_SEQ, metrics.Metrics.NEG_LOG_PERPLEXITY
     ]
 
+  @property
+  def all_metrics_fns(self):
+    return metrics.METRICS_FNS
+
   def eval_metric_fns(self, model_hparams):
     del model_hparams
     metric_names = self.eval_metrics()
-    if not all([m in metrics.METRICS_FNS for m in metric_names]):
+    if not all([m in self.all_metrics_fns for m in metric_names]):
       error_str = ("Unrecognized metric. Problem %s specified metrics "
                    "%s. Recognized metrics are %s.")
       raise ValueError(error_str % (self.name,
                                     metric_names,
-                                    list(metrics.METRICS_FNS.keys())))
+                                    list(self.all_metrics_fns.keys())))
     return {
-        metric_name: metrics.METRICS_FNS[metric_name]
+        metric_name: self.all_metrics_fns[metric_name]
         for metric_name in metric_names
     }
 
@@ -534,8 +538,6 @@ class Problem(object):
     if self._was_copy:
       _copy_problem_hparams(hp)
 
-    _create_modalities(hp, model_hparams)
-
     self._hparams = hp
     return self._hparams
 
@@ -686,6 +688,10 @@ class Problem(object):
     ## Shuffle records only for training examples.
     if shuffle_files and is_training:
       dataset = dataset.shuffle(shuffle_buffer_size)
+    if hparams.get("pack_dataset", False):
+      dataset = generator_utils.pack_dataset(
+          dataset, hparams.max_length, keys=["inputs", "targets"],
+          use_custom_ops=hparams.get("use_custom_ops", False))
     if output_buffer_size:
       dataset = dataset.prefetch(output_buffer_size)
 
@@ -890,7 +896,7 @@ class Problem(object):
 
     return None
 
-  def serving_input_fn(self, hparams):
+  def serving_input_fn(self, hparams, decode_hparams=None, use_tpu=False):
     """Input fn for serving export, starting from serialized example."""
     mode = tf.estimator.ModeKeys.PREDICT
     serialized_example = tf.placeholder(
@@ -899,9 +905,21 @@ class Problem(object):
     dataset = dataset.map(self.decode_example)
     dataset = dataset.map(lambda ex: self.preprocess_example(ex, mode, hparams))
     dataset = dataset.map(data_reader.cast_ints_to_int32)
-    dataset = dataset.padded_batch(
-        tf.shape(serialized_example, out_type=tf.int64)[0],
-        dataset.output_shapes)
+
+    if use_tpu:
+      padded_shapes = data_reader.pad_for_tpu(dataset.output_shapes, hparams,
+                                              hparams.max_length)
+      batch_size = 1 if not decode_hparams else getattr(decode_hparams,
+                                                        "batch_size", 1)
+      dataset = dataset.padded_batch(
+          batch_size, padded_shapes, drop_remainder=False)
+      dataset = dataset.map(
+          functools.partial(data_reader.pad_batch, batch_multiple=batch_size))
+    else:
+      dataset = dataset.padded_batch(
+          tf.shape(serialized_example, out_type=tf.int64)[0],
+          dataset.output_shapes)
+
     dataset = dataset.map(data_reader.standardize_shapes)
     features = tf.data.experimental.get_single_element(dataset)
 
@@ -996,43 +1014,9 @@ def _reverse_problem_hparams(p_hparams):
   p.was_reversed = True
 
 
-def _create_modalities(problem_hparams, model_hparams):
-  """Creates modalities and overrides any according to model hparams.
-
-  Args:
-    problem_hparams: HParams for the Problem. It must have
-      modality which is a dict of strings to ModalityTypes or Modality classes.
-    model_hparams: HParams for the model. It may have
-      input_modalities and target_modality, which will override
-      problem_hparams' modality input and target keys.
-
-  Returns:
-    None
-  """
-  modality_overrides = getattr(model_hparams, "modality", {})
-  modality = {}
-  for feature_name, modality_type in six.iteritems(problem_hparams.modality):
-    vocab_size = problem_hparams.vocab_size[feature_name]
-    # If needed for using a pre-trained model's vocabulary where extra indices
-    # were allocated for adding new tasks with unique task ids.
-    if (hasattr(model_hparams, "multiproblem_vocab_size") and
-        model_hparams.multiproblem_vocab_size > 0):
-      vocab_size = model_hparams.multiproblem_vocab_size
-    # Override modality using to the associated value in modality_overrides.
-    modality_type = modality_overrides.get(feature_name, modality_type)
-    # Each modality is a ModalityType or class. If ModalityType, get the
-    # corresponding class.
-    if modality_type in modalities.ModalityType.get_choices():
-      modality_cls = getattr(modalities, modality_type)
-    else:
-      modality_cls = modality_type
-    modality[feature_name] = modality_cls(model_hparams, vocab_size)
-  problem_hparams.modality = modality
-
-
 def _default_hparams():
   """A set of basic model hyperparameters."""
-  return HParams(
+  return hparam.HParams(
       # Use this parameter to get comparable perplexity numbers with different
       # tokenizations.  This value should be set to the ratio of the number of
       # tokens in the test set according to the tokenization used to the number
@@ -1056,6 +1040,7 @@ def _default_hparams():
       # chosen model architecture. It comprises key-value pairs of a feature
       # name (str) and its modality type.
       modality={},
+      vocab_size={},
 
       # Identifiers used to tell the model which input/target space will be
       # expected. For example, it can tell that we expect French as characters

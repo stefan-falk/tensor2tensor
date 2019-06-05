@@ -75,7 +75,7 @@ def gym_space_encode(gym_space, observation):
     return [observation]
 
   if isinstance(gym_space, Box):
-    return list(observation.reshape(-1))
+    return observation.reshape(-1).tolist()
 
   raise NotImplementedError
 
@@ -99,8 +99,8 @@ def cardinality(gym_space):
   """
 
   if (gym_space.dtype == np.float32) or (gym_space.dtype == np.float64):
-    tf.logging.error("Returning None for a float gym space's cardinality: ",
-                     gym_space)
+    tf.logging.warn("Returning None for a float gym space's cardinality: %s",
+                    gym_space)
     return None
 
   if isinstance(gym_space, Discrete):

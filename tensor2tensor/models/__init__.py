@@ -55,6 +55,7 @@ from tensor2tensor.models.research import glow
 from tensor2tensor.models.research import lm_experiments
 from tensor2tensor.models.research import moe_experiments
 from tensor2tensor.models.research import multiquery_paper
+from tensor2tensor.models.research import neural_stack
 from tensor2tensor.models.research import rl
 from tensor2tensor.models.research import similarity_transformer
 from tensor2tensor.models.research import super_lm
@@ -78,7 +79,6 @@ from tensor2tensor.models.video import epva
 from tensor2tensor.models.video import next_frame_glow
 from tensor2tensor.models.video import savp
 from tensor2tensor.models.video import sv2p
-from tensor2tensor.models.video import svg_lp
 
 from tensor2tensor.utils import registry
 

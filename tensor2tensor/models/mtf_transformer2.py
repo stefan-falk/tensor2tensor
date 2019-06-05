@@ -97,7 +97,7 @@ class MtfUnitransformer(mtf_model.MtfModel):
     x = tf.to_int32(features[key])
     x = common_layers.expand_squeeze_to_nd(x, 2)
     batch_size = mtf.Shape(self.batch_dims).size
-    # pad to length
+    x = x[:, :self.length_dim.size]
     extra_length = self.length_dim.size - tf.shape(x)[1]
     extra_batch = batch_size - tf.shape(x)[0]
     x = tf.pad(x, [[0, extra_batch], [0, extra_length]])
@@ -218,21 +218,34 @@ class MtfBitransformer(MtfUnitransformer):
     hparams = self._hparams
     encoder_layer_stack = layer_stack_from_hparams(hparams, "encoder_")
     decoder_layer_stack = layer_stack_from_hparams(hparams, "decoder_")
-    return transformer.Bitransformer(
-        encoder_layer_stack=encoder_layer_stack,
-        decoder_layer_stack=decoder_layer_stack,
-        encoder_d_model=hparams.d_model,
-        decoder_d_model=hparams.d_model,
+    encoder = transformer.Unitransformer(
+        layer_stack=encoder_layer_stack,
+        d_model=hparams.d_model,
         input_vocab_size=self._inputs_vocab_size,
-        output_vocab_size=self._targets_vocab_size,
+        output_vocab_size=None,
+        autoregressive=False,
         max_length=hparams.max_length,
-        shared_embedding=hparams.shared_embedding,
+        name="encoder",
+        layout=hparams.layout,
+        mesh_shape=hparams.mesh_shape,
+    )
+    decoder = transformer.Unitransformer(
+        layer_stack=decoder_layer_stack,
+        d_model=hparams.d_model,
+        input_vocab_size=self._targets_vocab_size,
+        output_vocab_size=self._targets_vocab_size,
+        autoregressive=True,
+        max_length=hparams.max_length,
+        label_smoothing=hparams.label_smoothing,
         shared_embedding_and_softmax_weights=(
             hparams.shared_embedding_and_softmax_weights),
-        label_smoothing=hparams.label_smoothing,
         z_loss=hparams.z_loss,
+        name="decoder",
         layout=hparams.layout,
-        mesh_shape=hparams.mesh_shape)
+        mesh_shape=hparams.mesh_shape,
+    )
+    return transformer.Bitransformer(
+        encoder, decoder, shared_embedding=hparams.shared_embedding)
 
   def _mtf_model_fn(self, features, mesh):
     self._original_features = features
@@ -418,9 +431,12 @@ def mtf_transformer2_base():
   hparams.use_fixed_batch_size = True
   hparams.add_hparam("mtf_mode", True)
   hparams.clip_grad_norm = 0.  # i.e. no gradient clipping
-  hparams.modality = {
-      "inputs": modalities.ModalityType.IDENTITY_SYMBOL,
-      "targets": modalities.ModalityType.IDENTITY_SYMBOL,
+  hparams.bottom = {
+      "inputs": modalities.identity_bottom,
+      "targets": modalities.identity_bottom,
+  }
+  hparams.top = {
+      "targets": modalities.identity_top,
   }
   hparams.add_hparam("beam_size", 1)
 

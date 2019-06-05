@@ -21,6 +21,7 @@ import operator
 import gym
 import six
 
+from tensor2tensor.data_generators import gym_env
 from tensor2tensor.data_generators import problem
 from tensor2tensor.data_generators import video_utils
 from tensor2tensor.envs import tic_tac_toe_env
@@ -33,10 +34,10 @@ from tensor2tensor.models.video import basic_stochastic
 from tensor2tensor.rl.envs.py_func_batch_env import PyFuncBatchEnv
 from tensor2tensor.rl.envs.simulated_batch_env import SimulatedBatchEnv
 from tensor2tensor.rl.envs.simulated_batch_gym_env import SimulatedBatchGymEnv
+from tensor2tensor.utils import hparam
 from tensor2tensor.utils import registry
 from tensor2tensor.utils import t2t_model
 from tensor2tensor.utils import trainer_lib
-from tensor2tensor.utils.hparam import HParams
 
 import tensorflow as tf
 import tensorflow_probability as tfp
@@ -71,6 +72,7 @@ def ppo_base_v1():
   hparams.add_hparam("logits_clip", 0.0)
   hparams.add_hparam("dropout_ppo", 0.1)
   hparams.add_hparam("effective_num_agents", None)
+  hparams.add_hparam("use_epochs", True)
   # TODO(afrozm): Clean this up, this is used in PPO learner to get modalities.
   hparams.add_hparam("policy_problem_name", "dummy_policy_problem")
   return hparams
@@ -79,7 +81,7 @@ def ppo_base_v1():
 @registry.register_hparams
 def basic_policy_parameters():
   wrappers = None
-  return HParams(wrappers=wrappers)
+  return hparam.HParams(wrappers=wrappers)
 
 
 @registry.register_hparams
@@ -135,9 +137,26 @@ def ppo_original_params():
 
 
 @registry.register_hparams
+def ppo_dist_params():
+  """Parameters based on the original paper modified for distributional RL."""
+  hparams = ppo_original_params()
+  hparams.learning_rate_constant = 1e-3
+  return hparams
+
+
+@registry.register_hparams
+def ppo_original_tiny():
+  """Parameters based on the original PPO paper, tiny version."""
+  hparams = ppo_original_params()
+  hparams.epoch_length = 5
+  hparams.optimization_batch_size = 1
+  return hparams
+
+
+@registry.register_hparams
 def ppo_ttt_params():
   """Parameters based on the original PPO paper."""
-  hparams = ppo_original_params()
+  hparams = ppo_original_tiny()
   hparams.policy_network = "feed_forward_categorical_policy"
   hparams.policy_problem_name = "dummy_policy_problem_ttt"
   return hparams
@@ -248,7 +267,7 @@ def make_simulated_env_kwargs(real_env, hparams, **extra_kwargs):
       (hparams, ["frame_stack_size", "intrinsic_reward_scale"])
   ]
   kwargs = {
-      attr: getattr(obj, attr)
+      attr: getattr(obj, attr)  # pylint: disable=g-complex-comprehension
       for (obj, attrs) in objs_and_attrs for attr in attrs
   }
   kwargs["model_name"] = hparams.generative_model
@@ -268,13 +287,16 @@ def make_simulated_env_fn_from_hparams(real_env, hparams, **extra_kwargs):
   )
 
 
-def get_policy(observations, hparams, action_space):
+def get_policy(observations, hparams, action_space,
+               distributional_size=1, epoch=-1):
   """Get a policy network.
 
   Args:
     observations: observations
     hparams: parameters
     action_space: action space
+    distributional_size: optional number of buckets for distributional RL
+    epoch: optional epoch number
 
   Returns:
     Tuple (action logits, value).
@@ -303,8 +325,12 @@ def get_policy(observations, hparams, action_space):
     num_target_frames = hparams.video_num_target_frames
   except AttributeError:
     num_target_frames = 1
+  target_value_shape_suffix = [num_target_frames]
+  if distributional_size > 1:
+    target_value_shape_suffix = [num_target_frames, distributional_size]
   features = {
       "inputs": observations,
+      "epoch": tf.constant(epoch + 1),
       "input_action": tf.zeros(obs_shape[:2] + [1], dtype=tf.int32),
       "input_reward": tf.zeros(obs_shape[:2] + [1], dtype=tf.int32),
       "targets": tf.zeros(obs_shape[:1] + [num_target_frames] + obs_shape[2:]),
@@ -315,12 +341,17 @@ def get_policy(observations, hparams, action_space):
       "target_policy": tf.zeros(
           obs_shape[:1] + [num_target_frames] + [action_space.n]),
       "target_value": tf.zeros(
-          obs_shape[:1] + [num_target_frames])
+          obs_shape[:1] + target_value_shape_suffix)
   }
+  model.distributional_value_size = max(distributional_size, 1)
+  model.use_epochs = hparams.use_epochs
   with tf.variable_scope(tf.get_variable_scope(), reuse=tf.AUTO_REUSE):
     t2t_model.create_dummy_vars()
     (targets, _) = model(features)
-  return (targets["target_policy"][:, 0, :], targets["target_value"][:, 0])
+  target_values = targets["target_value"][:, 0]
+  if distributional_size > 1:
+    target_values = targets["target_value"][:, :]
+  return (targets["target_policy"][:, 0, :], target_values)
 
 
 @registry.register_hparams
@@ -336,7 +367,7 @@ def ppo_pong_ae_base():
 def dqn_atari_base():
   # These params are based on agents/dqn/configs/dqn.gin
   # with some modifications taking into account our code
-  return HParams(
+  return hparam.HParams(
       agent_gamma=0.99,
       agent_update_horizon=1,
       agent_min_replay_history=20000,  # agent steps
@@ -354,12 +385,18 @@ def dqn_atari_base():
       optimizer_epsilon=0.00001,
       optimizer_centered=True,
 
+      # TODO(kozak): change names maybe replay_buffer -> agent?
+      # Also batch_size is now buffer_batch_size in _DQNAgent.
       replay_buffer_replay_capacity=1000000,
-      replay_buffer_batch_size=32,
+      replay_buffer_buffer_batch_size=32,
 
       time_limit=27000,
       save_every_steps=50000,
       num_frames=int(20 * 1e6),
+
+      # TODO(konradczechowski) this is not used in trainer_model_free, clean
+      # this up after evaluation refactor
+      eval_episodes_num=3,
   )
 
 
@@ -371,20 +408,36 @@ def dqn_original_params():
   return hparams
 
 
+def rlmf_tiny_overrides():
+  """Parameters to override for tiny setting excluding agent-related hparams."""
+  return dict(
+      max_num_noops=1,
+      eval_max_num_noops=1,
+      rl_env_max_episode_steps=7,
+      eval_rl_env_max_episode_steps=7,
+      eval_sampling_temps=[0.0, 1.0],
+  )
+
+
 @registry.register_hparams
 def rlmf_original():
-  return HParams(
+  return hparam.HParams(
       game="pong",
+      sticky_actions=False,
       base_algo="ppo",
       base_algo_params="ppo_original_params",
       batch_size=16,
       eval_batch_size=2,
       frame_stack_size=4,
       eval_sampling_temps=[0.0, 0.2, 0.5, 0.8, 1.0, 2.0],
+      max_num_noops=8,
       eval_max_num_noops=8,
       eval_rl_env_max_episode_steps=1000,
       resize_height_factor=2,
       resize_width_factor=2,
+      distributional_size=1,  # In distributional RL, number of buckets.
+      distributional_subscale=0.04,  # How to scale values to buckets.
+      distributional_threshold=0.0,  # Optimism threshold for experiments.
       grayscale=0,
       rl_env_max_episode_steps=-1,
       # If set, use this as the gym env name, instead of changing game mode etc.
@@ -392,6 +445,7 @@ def rlmf_original():
       # Controls whether we should derive observation space, do some
       # pre-processing etc. See T2TGymEnv._derive_observation_space.
       rl_should_derive_observation_space=True,
+      aunused=0,  # unused param for multi-run settings.
   )
 
 
@@ -404,7 +458,7 @@ def rlmf_tictactoe():
   # Since we don't have any no-op actions, otherwise we have to have an
   # attribute called `get_action_meanings`.
   hparams.eval_max_num_noops = 0
-  hparams.add_hparam("max_num_noops", 0)
+  hparams.max_num_noops = 0
   hparams.rl_should_derive_observation_space = False
 
   hparams.policy_network = "feed_forward_categorical_policy"
@@ -412,7 +466,6 @@ def rlmf_tictactoe():
 
   # Number of last observations to feed to the agent
   hparams.frame_stack_size = 1
-
   return hparams
 
 
@@ -425,13 +478,70 @@ def rlmf_base():
   return hparams
 
 
+@registry.register_ranged_hparams
+def rlmf_5runs(rhp):
+  rhp.set_discrete("aunused", list(range(5)))
+
+
+@registry.register_ranged_hparams
+def rlmf_5runs_atari(rhp):
+  rhp.set_categorical("game", gym_env.ATARI_GAMES_WITH_HUMAN_SCORE_NICE)
+  rhp.set_discrete("aunused", list(range(5)))
+
+
+@registry.register_hparams
+def rlmf_dist():
+  """Distributional set of hparams for model-free PPO."""
+  hparams = rlmf_original()
+  hparams.distributional_size = 1024
+  hparams.base_algo_params = "ppo_dist_params"
+  return hparams
+
+
+@registry.register_hparams
+def rlmf_dist_threshold():
+  """Distributional set of hparams for model-free PPO."""
+  hparams = rlmf_dist()
+  hparams.distributional_threshold = 0.5
+  return hparams
+
+
+@registry.register_hparams
+def rlmf_tiny():
+  """Tiny set of hparams for model-free PPO."""
+  hparams = rlmf_original()
+  hparams = hparams.override_from_dict(rlmf_tiny_overrides())
+  hparams.batch_size = 2
+  hparams.base_algo_params = "ppo_original_tiny"
+  hparams.add_hparam("ppo_epochs_num", 3)
+  hparams.add_hparam("ppo_epoch_length", 2)
+  return hparams
+
+
+@registry.register_hparams
+def rlmf_dqn_tiny():
+  """Tiny DQN params."""
+  hparams = rlmf_original()
+  hparams = hparams.override_from_dict(rlmf_tiny_overrides())
+  hparams.batch_size = 1
+  hparams.base_algo = "dqn"
+  hparams.base_algo_params = "dqn_original_params"
+  hparams.add_hparam("dqn_num_frames", 128)
+  hparams.add_hparam("dqn_save_every_steps", 128)
+  hparams.add_hparam("dqn_replay_buffer_replay_capacity", 100)
+  hparams.add_hparam("dqn_agent_min_replay_history", 10)
+  return hparams
+
+
 @registry.register_hparams
 def rlmf_eval():
   """Eval set of hparams for model-free PPO."""
   hparams = rlmf_original()
-  hparams.batch_size = 8
-  hparams.eval_sampling_temps = [0.0, 0.5, 1.0]
-  hparams.eval_rl_env_max_episode_steps = -1
+  hparams.batch_size = 16
+  hparams.eval_batch_size = 32
+  hparams.eval_episodes_num = 2
+  hparams.eval_sampling_temps = [0.5, 0.0, 1.0]
+  hparams.eval_rl_env_max_episode_steps = 40000
   hparams.add_hparam("ppo_epoch_length", 128)
   hparams.add_hparam("ppo_optimization_batch_size", 32)
   hparams.add_hparam("ppo_epochs_num", 10000)
@@ -442,14 +552,29 @@ def rlmf_eval():
 
 
 @registry.register_hparams
-def rlmf_tiny():
-  hparams = rlmf_base()
-  hparams.ppo_epochs_num = 100
-  hparams.ppo_eval_every_epochs = 10
+def rlmf_eval_dist():
+  """Distributional set of hparams for model-free PPO."""
+  hparams = rlmf_eval()
+  hparams.distributional_size = 4096
+  hparams.distributional_subscale = 0.08
+  hparams.base_algo_params = "ppo_dist_params"
+  return hparams
+
+
+@registry.register_hparams
+def rlmf_eval_dist_threshold():
+  """Distributional set of hparams for model-free PPO."""
+  hparams = rlmf_eval_dist()
+  hparams.distributional_threshold = 0.5
   return hparams
 
 
 class PolicyBase(t2t_model.T2TModel):
+
+  def __init__(self, *args, **kwargs):
+    super(PolicyBase, self).__init__(*args, **kwargs)
+    self.distributional_value_size = 1
+    self.use_epochs = False
 
   def loss(self, *args, **kwargs):
     return 0.0
@@ -588,6 +713,10 @@ class FeedForwardCnnSmallCategoricalPolicy(PolicyBase):
 
   def body(self, features):
     observations = features["inputs_raw"]
+    # Axis 0    - Batch.
+    # Axis 1    - Input Frames, 4 frames.
+    # Axis 2, 3 - Height & Width.
+    # Axis 4    - Channels RGB, 3 colours.
     x = tf.transpose(observations, [0, 2, 3, 1, 4])
     x_shape = common_layers.shape_list(x)
     x = tf.reshape(x, x_shape[:-2] + [-1])
@@ -600,6 +729,14 @@ class FeedForwardCnnSmallCategoricalPolicy(PolicyBase):
                            activation=tf.nn.relu, padding="same")
 
       flat_x = tf.layers.flatten(x)
+      if self.use_epochs:
+        epoch = features["epoch"] + tf.zeros([x_shape[0]], dtype=tf.int32)
+        # Randomly set epoch to 0 in some cases as that's the inference value.
+        rand = tf.random.uniform([x_shape[0]])
+        epoch = tf.where(rand < 0.1, tf.zeros_like(epoch), epoch)
+        # Embed the epoch number.
+        emb_epoch = common_layers.embedding(epoch, 32, 32)  # [batch, 32]
+        flat_x = tf.concat([flat_x, emb_epoch], axis=1)
       flat_x = tf.layers.dropout(flat_x, rate=dropout)
       x = tf.layers.dense(flat_x, 128, activation=tf.nn.relu)
 
@@ -608,8 +745,7 @@ class FeedForwardCnnSmallCategoricalPolicy(PolicyBase):
       )
       logits = clip_logits(logits, self.hparams)
       logits = tf.expand_dims(logits, axis=1)
-
-      value = tf.layers.dense(x, 1)
+      value = tf.layers.dense(x, self.distributional_value_size)
     return {"target_policy": logits, "target_value": value}
 
 

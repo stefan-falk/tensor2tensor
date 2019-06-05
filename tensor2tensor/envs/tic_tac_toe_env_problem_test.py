@@ -20,6 +20,7 @@ from __future__ import division
 from __future__ import print_function
 
 import numpy as np
+from tensor2tensor.envs import env_problem_utils
 from tensor2tensor.envs import tic_tac_toe_env  # pylint: disable=unused-import
 from tensor2tensor.envs import tic_tac_toe_env_problem  # pylint: disable=unused-import
 from tensor2tensor.utils import registry
@@ -31,7 +32,7 @@ class TicTacToeEnvProblemTest(tf.test.TestCase):
   def test_registration_and_interaction_with_env_problem(self):
     batch_size = 5
     # This ensures that registration has occurred.
-    ep = registry.env_problem("tic_tac_toe_env_problem", batch_size)
+    ep = registry.env_problem("tic_tac_toe_env_problem", batch_size=batch_size)
     ep.reset()
     num_done, num_lost, num_won, num_draw = 0, 0, 0, 0
     nsteps = 100
@@ -45,22 +46,20 @@ class TicTacToeEnvProblemTest(tf.test.TestCase):
       self.assertEqual(batch_size, len(dones))
       self.assertEqual(batch_size, len(infos))
 
-      done_indices = ep.done_indices(dones)
+      done_indices = env_problem_utils.done_indices(dones)
       ep.reset(done_indices)
       num_done += sum(dones)
       for r, d in zip(rewards, dones):
         if not d:
           continue
-        # NOTE: r is 0, 1, 2 because the default EnvProblem.process_rewards
-        # shifts the rewards so that min is 0.
-        if r == 0:
+        if r == -1:
           num_lost += 1
-        elif r == 1:
+        elif r == 0:
           num_draw += 1
-        elif r == 2:
+        elif r == 1:
           num_won += 1
         else:
-          raise ValueError("reward should be 0, 1, 2 but is {}".format(r))
+          raise ValueError("reward should be -1, 0, 1 but is {}".format(r))
 
     # Assert that something got done atleast, without that the next assert is
     # meaningless.

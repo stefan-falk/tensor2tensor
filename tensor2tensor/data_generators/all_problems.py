@@ -19,11 +19,13 @@ from __future__ import division
 from __future__ import print_function
 
 import importlib
-import re
+import six
+from six.moves import range  # pylint: disable=redefined-builtin
 
 MODULES = [
     "tensor2tensor.data_generators.algorithmic",
     "tensor2tensor.data_generators.algorithmic_math",
+    "tensor2tensor.data_generators.algorithmic_math_deepmind",
     "tensor2tensor.data_generators.algorithmic_math_two_variables",
     "tensor2tensor.data_generators.allen_brain",
     "tensor2tensor.data_generators.audio",
@@ -52,6 +54,7 @@ MODULES = [
     "tensor2tensor.data_generators.lm1b_imdb",
     "tensor2tensor.data_generators.lm1b_mnli",
     "tensor2tensor.data_generators.mnist",
+    "tensor2tensor.data_generators.moving_mnist",
     "tensor2tensor.data_generators.mrpc",
     "tensor2tensor.data_generators.mscoco",
     "tensor2tensor.data_generators.multinli",
@@ -91,14 +94,21 @@ MODULES = [
     "tensor2tensor.data_generators.wikitext103",
     "tensor2tensor.data_generators.wsj_parsing",
     "tensor2tensor.data_generators.wnli",
+    "tensor2tensor.data_generators.yelp_polarity",
+    "tensor2tensor.data_generators.yelp_full",
+    "tensor2tensor.envs.mujoco_problems",
+    "tensor2tensor.envs.tic_tac_toe_env_problem",
 ]
 ALL_MODULES = list(MODULES)
 
 
 
 def _is_import_err_msg(err_str, module):
-  module_pattern = "(.)?".join(["(%s)?" % m for m in module.split(".")])
-  return re.match("^No module named (')?%s(')?$" % module_pattern, err_str)
+  parts = module.split(".")
+  suffixes = [".".join(parts[i:]) for i in range(len(parts))]
+  return err_str in (
+      ["No module named %s" % suffix for suffix in suffixes] +
+      ["No module named '%s'" % suffix for suffix in suffixes])
 
 
 def _handle_errors(errors):
@@ -106,7 +116,7 @@ def _handle_errors(errors):
   if not errors:
     return
   log_all = True  # pylint: disable=unused-variable
-  err_msg = "Skipped importing {num_missing} data_generators modules."
+  err_msg = "T2T: skipped importing {num_missing} data_generators modules."
   print(err_msg.format(num_missing=len(errors)))
   for module, err in errors:
     err_str = str(err)

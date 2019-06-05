@@ -19,6 +19,8 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+import numpy as np
+
 from six.moves import range  # pylint: disable=redefined-builtin
 from tensor2tensor.layers import common_attention
 from tensor2tensor.layers import common_layers
@@ -157,6 +159,32 @@ def local_attention_1d(x,
     if is_4d:
       y = tf.reshape(y, x_shape)
     return y
+
+
+def get_dilated_1d_attention_mask(
+    num_heads, block_size,
+    num_blocks, memory_size, gap_size,
+    name="dilated_mask"):
+  """Dilated attention with a masking strategy."""
+  mask = np.ones((num_heads, block_size, 2*block_size), np.bool)
+
+  # now going over every row to do the right assignment of
+  # memory blocks
+  for i in range(block_size):
+    visible = 2*block_size  - (block_size-i)
+    # You always attend to yourself, set the mask for that
+    mask[:, i, -(block_size - i)] = 0
+    # Maybe num_blocks can be automatically calculated?
+    for j in range(num_blocks):
+      for k in range(memory_size):
+        index = ((gap_size + memory_size)*j) + k
+        if index >= visible:
+          break
+        mask[:, i, -(index + block_size - i + 1)] = 0  # Verify
+
+  # adding a num blocks dimension
+  mask = np.expand_dims(mask, axis=1)
+  return tf.constant(mask, dtype=tf.int32, name=name)
 
 
 def dilated_attention_1d(x,
@@ -603,30 +631,9 @@ def prepare_decoder(targets, hparams):
 
 def prepare_image(inputs, hparams, name=None):
   """Prepare image."""
-  inputs_shape = common_layers.shape_list(inputs)
-  batch = inputs_shape[0]
-  orig_rows = inputs_shape[1]
-  orig_cols = inputs_shape[2]
-  channels = hparams.num_channels
-
-  hidden_size = hparams.hidden_size
-  # TODO(trandustin): Check via modalities.ModalityType.IDENTITY and not str.
-  # The current implementation is to avoid circular imports, modalities ->
-  # discretization -> common_image_attention -> modalities.
-  if "targets" in hparams.modality:
-    target_modality_name = hparams.modality["targets"]
-    if not isinstance(target_modality_name, str):
-      target_modality_name = target_modality_name.__name__
-  else:
-    target_modality_name = None
-  if target_modality_name == "IdentityModality":
-    inputs = tf.to_int32(inputs)
-    x = get_channel_embeddings(channels, inputs, hidden_size, name=name)
-  else:
-    x = inputs
-  x = tf.reshape(x, [batch, orig_rows, orig_cols * channels, hidden_size])
-
-  return x
+  # TODO(trandustin): This is a legacy function. Remove its usage.
+  del hparams, name  # unused arg
+  return inputs
 
 
 def create_output(decoder_output, rows, cols, targets, hparams):
@@ -647,17 +654,19 @@ def create_output(decoder_output, rows, cols, targets, hparams):
     [batch, hparams.img_len, hparams.img_len, hparams.num_channels, 256].
     In the special case of predict mode, it is a Tensor of rank 5.
   """
+  del targets  # unused arg
   decoded_image = postprocess_image(decoder_output, rows, cols, hparams)
+  batch = common_layers.shape_list(decoded_image)[0]
   depth = common_layers.shape_list(decoded_image)[-1]
-  batch, height, width, channels = common_layers.shape_list(targets)
   likelihood = getattr(hparams, "likelihood", DistributionType.CAT)
   if hparams.mode == tf.estimator.ModeKeys.PREDICT:
     y = tf.reshape(decoded_image, [batch, -1, 1, 1, depth])
-    output = y[:, :height, :, :, :]
+    output = y[:, :rows, :, :, :]
   elif likelihood == DistributionType.CAT:
     # Unpack the cols dimension of the Categorical.
+    channels = hparams.num_channels
     output = tf.reshape(decoded_image,
-                        [batch, height, width, channels, depth])
+                        [batch, rows, cols // channels, channels, depth])
   else:
     output = decoded_image
   return output

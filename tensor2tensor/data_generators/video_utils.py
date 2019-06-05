@@ -45,13 +45,8 @@ flags.DEFINE_bool(
 
 
 def resize_video_frames(images, size):
-  resized_images = []
-  for image in images:
-    resized_images.append(
-        tf.to_int64(
-            tf.image.resize_images(image, [size, size],
-                                   tf.image.ResizeMethod.BILINEAR)))
-  return resized_images
+  return [tf.to_int64(tf.image.resize_images(
+      image, [size, size], tf.image.ResizeMethod.BILINEAR)) for image in images]
 
 
 def video_augmentation(features, hue=False, saturate=False, contrast=False):
@@ -93,6 +88,9 @@ def create_border(video, color="blue", border_percent=2):
   Returns:
     video: 5-D NumPy array.
   """
+  # Do not create border if the video is not in RGB format
+  if video.shape[-1] != 3:
+    return video
   color_to_axis = {"blue": 2, "red": 0, "green": 1}
   axis = color_to_axis[color]
   _, _, height, width, _ = video.shape

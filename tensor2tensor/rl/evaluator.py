@@ -37,9 +37,9 @@ from tensor2tensor.models.research import rl  # pylint: disable=unused-import
 from tensor2tensor.rl import rl_utils
 from tensor2tensor.rl import trainer_model_based_params  # pylint: disable=unused-import
 from tensor2tensor.utils import flags as t2t_flags  # pylint: disable=unused-import
+from tensor2tensor.utils import hparam
 from tensor2tensor.utils import registry
 from tensor2tensor.utils import trainer_lib
-from tensor2tensor.utils.hparam import HParams
 
 import tensorflow as tf
 
@@ -106,7 +106,7 @@ flags.DEFINE_integer("vizier_search_algorithm", 0, "Unused.")
 
 @registry.register_hparams
 def planner_tiny():
-  return HParams(
+  return hparam.HParams(
       num_rollouts=1,
       planning_horizon=2,
       rollout_agent_type="random",
@@ -119,7 +119,7 @@ def planner_tiny():
 
 @registry.register_hparams
 def planner_small():
-  return HParams(
+  return hparam.HParams(
       num_rollouts=64,
       planning_horizon=16,
       rollout_agent_type="policy",
@@ -132,7 +132,7 @@ def planner_small():
 
 @registry.register_hparams
 def planner_base():
-  return HParams(
+  return hparam.HParams(
       num_rollouts=96,
       batch_size=96,
       planning_horizon=8,
@@ -252,7 +252,7 @@ def make_env(env_type, real_env, sim_env_kwargs):
 
 def make_agent(
     agent_type, env, policy_hparams, policy_dir, sampling_temp,
-    sim_env_kwargs=None, frame_stack_size=None, rollout_agent_type=None,
+    sim_env_kwargs_fn=None, frame_stack_size=None, rollout_agent_type=None,
     batch_size=None, inner_batch_size=None, env_type=None, **planner_kwargs
 ):
   """Factory function for Agents."""
@@ -270,7 +270,7 @@ def make_agent(
           batch_size, make_agent(
               rollout_agent_type, env, policy_hparams, policy_dir,
               sampling_temp, batch_size=inner_batch_size
-          ), make_env(env_type, env.env, sim_env_kwargs),
+          ), make_env(env_type, env.env, sim_env_kwargs_fn()),
           lambda env: rl_utils.BatchStackWrapper(env, frame_stack_size),
           discount_factor=policy_hparams.gae_gamma, **planner_kwargs
       ),
@@ -302,17 +302,18 @@ def make_agent_from_hparams(
     planner_hparams, model_dir, policy_dir, sampling_temp, video_writers=()
 ):
   """Creates an Agent from hparams."""
-  sim_env_kwargs = rl.make_simulated_env_kwargs(
-      base_env, loop_hparams, batch_size=planner_hparams.batch_size,
-      model_dir=model_dir
-  )
+  def sim_env_kwargs_fn():
+    return rl.make_simulated_env_kwargs(
+        base_env, loop_hparams, batch_size=planner_hparams.batch_size,
+        model_dir=model_dir
+    )
   planner_kwargs = planner_hparams.values()
   planner_kwargs.pop("batch_size")
   planner_kwargs.pop("rollout_agent_type")
   planner_kwargs.pop("env_type")
   return make_agent(
       agent_type, stacked_env, policy_hparams, policy_dir, sampling_temp,
-      sim_env_kwargs, loop_hparams.frame_stack_size,
+      sim_env_kwargs_fn, loop_hparams.frame_stack_size,
       planner_hparams.rollout_agent_type,
       inner_batch_size=planner_hparams.batch_size,
       env_type=planner_hparams.env_type,

@@ -31,8 +31,8 @@ from tensor2tensor.models.research.rl import get_policy
 from tensor2tensor.models.research.rl import make_simulated_env_fn_from_hparams
 from tensor2tensor.rl import rl_utils
 from tensor2tensor.rl.envs.simulated_batch_gym_env import FlatBatchEnv
+from tensor2tensor.utils import hparam
 from tensor2tensor.utils import trainer_lib
-from tensor2tensor.utils.hparam import HParams
 from tensor2tensor.utils.misc_utils import camelcase_to_snakecase
 
 import tensorflow as tf
@@ -283,7 +283,7 @@ def create_simulated_env(
     if key not in other_hparams:
       other_hparams[key] = a_bit_risky_defaults[key]
 
-  hparams = HParams(
+  hparams = hparam.HParams(
       grayscale=grayscale,
       resize_width_factor=resize_width_factor,
       resize_height_factor=resize_height_factor,
@@ -389,7 +389,7 @@ def infer_paths(output_dir, **subdirs):
   Returns:
     a dictionary with the directories.
   """
-  directories = dict()
+  directories = {}
   for name, path in six.iteritems(subdirs):
     directories[name] = path if path else os.path.join(output_dir, name)
   directories["output_dir"] = output_dir

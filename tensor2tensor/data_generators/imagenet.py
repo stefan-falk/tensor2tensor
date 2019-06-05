@@ -23,6 +23,7 @@ import os
 
 from tensor2tensor.data_generators import generator_utils
 from tensor2tensor.data_generators import image_utils
+from tensor2tensor.data_generators import problem
 from tensor2tensor.layers import modalities
 from tensor2tensor.utils import registry
 
@@ -331,6 +332,31 @@ class ImageImagenetMultiResolutionGen(ImageImagenet64Gen):
 
 
 @registry.register_problem
+class ImageImagenet64GenFlat(ImageImagenet64Gen):
+  """Imagenet 64 from the pixen cnn paper, as a flat array."""
+
+  def dataset_filename(self):
+    return "image_imagenet64_gen"  # Reuse data.
+
+  def preprocess_example(self, example, mode, unused_hparams):
+    example["inputs"].set_shape(
+        [_IMAGENET_MEDIUM_IMAGE_SIZE, _IMAGENET_MEDIUM_IMAGE_SIZE, 3])
+    example["inputs"] = tf.to_int64(example["inputs"])
+    example["inputs"] = tf.reshape(example["inputs"], (-1,))
+
+    del example["targets"]  # Ensure unconditional generation
+
+    return example
+
+  def hparams(self, defaults, model_hparams):
+    super(ImageImagenet64GenFlat, self).hparams(defaults, model_hparams)
+    # Switch to symbol modality
+    p = defaults
+    p.modality["inputs"] = modalities.ModalityType.SYMBOL_WEIGHTS_ALL
+    p.input_space_id = problem.SpaceID.GENERIC
+
+
+@registry.register_problem
 class ImageImagenet32Small(ImageImagenet):
   """Imagenet small from the pixel cnn paper."""
 
@@ -573,6 +599,7 @@ def preprocess_for_train(image, image_size=224, normalize=True):
   Returns:
     A preprocessed image `Tensor`.
   """
+  if normalize: image = tf.to_float(image) / 255.0
   image = _random_crop(image, image_size)
   if normalize: image = _normalize(image)
   image = _flip(image)
@@ -591,6 +618,7 @@ def preprocess_for_eval(image, image_size=224, normalize=True):
   Returns:
     A preprocessed image `Tensor`.
   """
+  if normalize: image = tf.to_float(image) / 255.0
   image = _do_scale(image, image_size + 32)
   if normalize: image = _normalize(image)
   image = _center_crop(image, image_size)

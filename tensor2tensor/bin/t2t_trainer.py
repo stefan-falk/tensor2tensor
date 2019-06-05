@@ -24,6 +24,7 @@ import sys
 from tensor2tensor import models  # pylint: disable=unused-import
 from tensor2tensor import problems as problems_lib  # pylint: disable=unused-import
 from tensor2tensor.data_generators import problem  # pylint: disable=unused-import
+
 from tensor2tensor.utils import cloud_mlengine
 from tensor2tensor.utils import decoding
 from tensor2tensor.utils import flags as t2t_flags  # pylint: disable=unused-import
@@ -32,10 +33,10 @@ from tensor2tensor.utils import mlperf_log
 from tensor2tensor.utils import registry
 from tensor2tensor.utils import trainer_lib
 from tensor2tensor.utils import usr_dir
-from tensor2tensor.v2 import t2t as t2t_v2
 import tensorflow as tf
 
 from tensorflow.contrib.tpu.python.tpu import tpu_config
+
 
 flags = tf.flags
 FLAGS = flags.FLAGS
@@ -49,6 +50,9 @@ flags.DEFINE_string("t2t_usr_dir", None,
                     "available to the t2t-trainer.")
 flags.DEFINE_integer("random_seed", None, "Random seed.")
 flags.DEFINE_integer("tpu_num_shards", 8, "Number of tpu shards.")
+flags.DEFINE_string("tpu_job_name", None,
+                    "TPU job name. TPUEstimator can auto-infer this but if the "
+                    "configuration is esoteric it should be provided here.")
 flags.DEFINE_integer("iterations_per_loop", 100,
                      "Number of iterations in a TPU training loop.")
 flags.DEFINE_bool("use_tpu", False, "Whether to use TPU.")
@@ -70,7 +74,6 @@ flags.DEFINE_integer("inter_op_parallelism_threads", 0,
 flags.DEFINE_integer("intra_op_parallelism_threads", 0,
                      "Number of intra_op_parallelism_threads to use for CPU. "
                      "See TensorFlow config.proto for details.")
-flags.DEFINE_bool("v2", False, "Whether to use T2T v2.")
 # TODO(lukaszkaiser): resolve memory and variable assign issues and set to True.
 flags.DEFINE_bool(
     "optionally_use_dist_strat", False,
@@ -217,6 +220,8 @@ def create_run_config(hp, output_dir=None):
     save_ckpt_steps = None
   assert FLAGS.output_dir or FLAGS.checkpoint_path
   tpu_config_extra_kwargs = {}
+  if FLAGS.tpu_job_name is not None:
+    tpu_config_extra_kwargs["tpu_job_name"] = FLAGS.tpu_job_name
 
   if getattr(hp, "mtf_mode", False):
     save_ckpt_steps = None  # Disable the default saver
@@ -359,26 +364,6 @@ def run_std_server():
 def main(argv):
   tf.logging.set_verbosity(tf.logging.INFO)
 
-  if FLAGS.v2:
-    tf.enable_v2_behavior()
-    # Hacking main v1 flags to work with v2.
-    config_strs = []
-    config_strs.append(
-        "train_fn.train_steps=" + str(FLAGS.train_steps))
-    config_strs.append(
-        "train_fn.eval_steps=" + str(FLAGS.eval_steps))
-    config_strs.append(
-        "train_fn.eval_frequency=" + str(FLAGS.local_eval_frequency))
-    if FLAGS.hparams:
-      config_strs.extend(str(FLAGS.hparams).split(","))
-    config_str = "\n".join(config_strs)
-    data_dir = os.path.expanduser(FLAGS.data_dir)
-    output_dir = os.path.expanduser(FLAGS.output_dir)
-    t2t_v2.t2t_train(FLAGS.model, FLAGS.problem,
-                     data_dir=data_dir, output_dir=output_dir,
-                     config_file=FLAGS.hparams_set, config=config_str)
-    return
-
   usr_dir.import_usr_dir(FLAGS.t2t_usr_dir)
 
   # If we just have to print the registry, do that and exit early.
@@ -387,7 +372,8 @@ def main(argv):
   # Create HParams.
   if argv:
     set_hparams_from_args(argv[1:])
-  hparams = create_hparams()
+  if FLAGS.schedule != "run_std_server":
+    hparams = create_hparams()
 
   if FLAGS.schedule == "train" or FLAGS.schedule == "train_eval_and_decode":
     mlperf_log.transformer_print(key=mlperf_log.RUN_START, hparams=hparams)

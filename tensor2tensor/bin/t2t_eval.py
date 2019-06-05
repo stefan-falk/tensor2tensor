@@ -22,6 +22,7 @@ from __future__ import print_function
 from tensor2tensor.bin import t2t_trainer          # pylint: disable=unused-import
 from tensor2tensor.data_generators import problem  # pylint: disable=unused-import
 from tensor2tensor.utils import trainer_lib
+from tensor2tensor.utils import usr_dir
 import tensorflow as tf
 
 flags = tf.flags
@@ -31,6 +32,7 @@ FLAGS = flags.FLAGS
 def main(_):
   tf.logging.set_verbosity(tf.logging.INFO)
   trainer_lib.set_random_seed(FLAGS.random_seed)
+  usr_dir.import_usr_dir(FLAGS.t2t_usr_dir)
 
   hparams = trainer_lib.create_hparams(
       FLAGS.hparams_set, FLAGS.hparams, data_dir=FLAGS.data_dir,
@@ -49,8 +51,12 @@ def main(_):
 
   estimator = trainer_lib.create_estimator(
       FLAGS.model, hparams, config, use_tpu=FLAGS.use_tpu)
-  predictions = estimator.evaluate(eval_input_fn, steps=FLAGS.eval_steps)
-  tf.logging.info(predictions)
+  ckpt_iter = trainer_lib.next_checkpoint(
+      hparams.model_dir, FLAGS.eval_timeout_mins)
+  for ckpt_path in ckpt_iter:
+    predictions = estimator.evaluate(
+        eval_input_fn, steps=FLAGS.eval_steps, checkpoint_path=ckpt_path)
+    tf.logging.info(predictions)
 
 
 if __name__ == "__main__":

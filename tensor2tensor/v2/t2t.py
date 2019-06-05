@@ -22,6 +22,8 @@ from __future__ import print_function
 import collections
 import os
 
+import gin
+
 from tensor2tensor import problems
 from tensor2tensor.utils import data_reader
 from tensor2tensor.v2.models import basic
@@ -30,8 +32,6 @@ from tensor2tensor.v2.models import transformer
 
 import tensorflow as tf
 import tensorflow_datasets as tfds
-
-import gin.tf
 
 
 # Since there are few models and configs for now, we use this simple registry.
@@ -56,8 +56,8 @@ def train_and_eval_dataset(dataset_name, data_dir):
 
   Returns:
     a 4-tuple consisting of:
-     * the train tf.Daataset
-     * the eval tf.Daataset
+     * the train tf.data.Dataset
+     * the eval tf.data.Dataset
      * information about features: a python dictionary with feature names
          as keys and an object as value that provides .shape and .num_classes.
      * supervised_keys: information what's the input and what's the target,

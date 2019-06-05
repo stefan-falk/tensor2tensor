@@ -307,7 +307,9 @@ def setup_env(hparams,
       resize_height_factor=hparams.resize_height_factor,
       rl_env_max_episode_steps=rl_env_max_episode_steps,
       max_num_noops=max_num_noops,
-      maxskip_envs=maxskip_envs)
+      maxskip_envs=maxskip_envs,
+      sticky_actions=hparams.sticky_actions
+  )
   return env
 
 
@@ -414,9 +416,8 @@ def augment_observation(
       (1, 15), "f:{:3}".format(int(frame_index)),
       fill=(255, 0, 0)
   )
-  header = np.asarray(img)
+  header = np.copy(np.asarray(img))
   del img
-  header.setflags(write=1)
   if bar_color is not None:
     header[0, :, :] = bar_color
   return np.concatenate([header, observation], axis=0)
@@ -434,10 +435,10 @@ def run_rollouts(
   )
 
   num_dones = 0
-  first_dones = [False] * env.batch_size
+  first_dones = np.array([False] * env.batch_size)
   observations = initial_observations
   step_index = 0
-  cum_rewards = 0
+  cum_rewards = np.zeros(env.batch_size)
 
   for (video_writer, obs_stack) in zip(video_writers, initial_observations):
     for (i, ob) in enumerate(obs_stack):
@@ -448,10 +449,10 @@ def run_rollouts(
       video_writer.write(debug_frame)
 
   def proceed():
-    if step_limit is not None:
-      return step_index < step_limit
+    if step_index < step_limit:
+      return num_dones < env.batch_size or many_rollouts_from_each_env
     else:
-      return num_dones < env.batch_size
+      return False
 
   while proceed():
     act_kwargs = {}
@@ -474,12 +475,16 @@ def run_rollouts(
       for (i, observation) in zip(now_done_indices, reset_observations):
         observations[i] = observation
     observations = np.array(observations)
-    cum_rewards = cum_rewards * discount_factor + rewards
+    cum_rewards[~first_dones] = (
+        cum_rewards[~first_dones] * discount_factor + rewards[~first_dones]
+    )
     step_index += 1
 
-    for (video_writer, obs_stack, reward, cum_reward) in zip(
-        video_writers, observations, rewards, cum_rewards
+    for (video_writer, obs_stack, reward, cum_reward, done) in zip(
+        video_writers, observations, rewards, cum_rewards, first_dones
     ):
+      if done:
+        continue
       ob = obs_stack[-1]
       debug_frame = augment_observation(
           ob, reward=reward, cum_reward=cum_reward,

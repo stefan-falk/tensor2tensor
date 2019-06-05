@@ -19,8 +19,8 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 from six.moves import zip  # pylint: disable=redefined-builtin
+from tensor2tensor.utils import hparam
 from tensor2tensor.utils import registry
-from tensor2tensor.utils.hparam import HParams
 
 import tensorflow as tf
 
@@ -28,7 +28,7 @@ import tensorflow as tf
 @registry.register_hparams("basic_1")
 def basic_params1():
   """A set of basic hyperparameters."""
-  return HParams(
+  return hparam.HParams(
       # If the problem consists of variable-length sequences
       # (see problem.batch_size_means_tokens()), then this is the number
       # of tokens per batch per GPU or per TPU core.  Otherwise, this is
@@ -70,7 +70,7 @@ def basic_params1():
       optimizer_adafactor_clipping_threshold=1.0,
       optimizer_adafactor_multiply_by_parameter_scale=True,
       # Number of accumulating steps for multi step optimizers.
-      optimizer_multistep_accumulate_steps=None,
+      optimizer_multistep_accumulate_steps=0,
       # Loss scaling used.
       # Generally only necessary with mixed precision training.
       # Mixed precision training only supports exponential scaling currently
@@ -105,6 +105,7 @@ def basic_params1():
       learning_rate=0.1,
       sampling_method="argmax",  # "argmax" or "random"
       sampling_temp=1.0,  # temperature for sampling
+      sampling_keep_top_k=-1,  # If >0, ignore all but the top k logits
       # expand the logits a piece at a time - saves memory.
       factored_logits=False,
       multiply_embedding_mode="sqrt_depth",
@@ -141,7 +142,6 @@ def basic_params1():
       norm_type="layer",  # "batch", layer", "noam", "none".
       # epsilon parameter to normalization function
       norm_epsilon=1e-6,
-      symbol_modality_num_shards=1,
       # pad vocabularies so that this value divides the vocabulary size.
       vocab_divisor=1,
       # During training, we drop sequences whose inputs and targets are shorter
@@ -151,9 +151,14 @@ def basic_params1():
       # than max_length.
       # If max_length==0, we use hparams.batch_size instead.
       max_length=0,
+      # Pack examples on the fly.
+      pack_dataset=False,
+      # Use custom ops not included in standard tensorflow.
+      use_custom_ops=True,
       # Split targets on the first axis into chunks of this length.
       split_targets_chunk_length=0,
       split_targets_max_chunks=100,
+      split_targets_strided_training=False,
       # Maximum length in the smallest length bucket.  Setting this
       # flag too high will result in wasteful padding of short
       # sequences.  Due to some (hopefully) temporary hacks in the
@@ -172,22 +177,26 @@ def basic_params1():
       # If True, run the model autoregressively instead of teacher-forcing
       # during eval
       eval_run_autoregressive=False,
-      # TODO(lukaszkaiser): these parameters should probably be set elsewhere.
-      # (SymbolModality) - If this flag is on, we try to share all of the input
-      # embeddings, the target embeddings and the softmax weights.
+      # (For features with symbol modality) If True, share all of the
+      # input embeddings, target embeddings, and softmax weights.
       shared_embedding_and_softmax_weights=False,
-      # (SymbolModality) - If this flag is on, we try to share the input
-      # embeddings and the target embeddings.
-      # You can also share the input embeddings with the target embeddings
-      # by using a problem_hparams that uses the same modality object for
-      # the input modality and target modality.
+      # (For features with symbol modality) If True, share the input embeddings
+      # and target embeddings.
       shared_embedding=False,
-      # In SymbolModality, skip the top layer, assume we're providing logits.
-      symbol_modality_skip_top=False,
-      # Modalities used to map from features to a space compatible with
-      # chosen model architecture. It comprises key-value pairs of a feature
-      # name (str) and its modality type.
-      modality={},
+      # (For features with symbol modality) Number to shard embeddings by.
+      symbol_modality_num_shards=1,
+      # Feature transformations are optional dictionaries comprising key-value
+      # pairs of a feature name (str) and its transformation (function). If not
+      # specified, T2TModel applies a default transformation according to the
+      # feature's modality. Bottom is applicable to all features; loss, top, and
+      # weights_fn are only applicable to target features.
+      # TODO(trandustin): `name` is an optional hparam for legacy reasons,
+      # defining variable scope names. Remove this hparam in the future.
+      bottom={},
+      loss={},
+      name={},
+      top={},
+      weights_fn={},
       # The maximum length of "input" sequence.
       # Sequences longer than this value will be truncated. 0 or negative values
       # mean there is no maximum or truncation.
@@ -233,12 +242,17 @@ def basic_params1():
       # will such additional step be run. It's turned off (0.0) by default.
       # This probability will exponentially warm up for the number of
       # steps determined by scheduled_sampling_warmup_steps.
-      # The tensor used for the second step will consist of outputs from
-      # the first step mixed with gold truth, with the proportion of gold
-      # determined by scheduled_sampling_gold_mixin_prob.
+      # The tensor used for the n-th pass will consist of outputs from
+      # the (n-1)-th pass mixed with gold truth, with the proportion of gold
+      # determined by scheduled_sampling_gold_mixin_prob. Control the number
+      # of passes with scheduled_sampling_num_passes.
       scheduled_sampling_prob=0.0,
+      scheduled_sampling_method="parallel",  # parallel or sequential.
       scheduled_sampling_warmup_steps=50000,
       scheduled_sampling_gold_mixin_prob=0.5,
+      scheduled_sampling_num_passes=1,
+      scheduled_sampling_warmup_schedule="exp",  # exp, linear, or sigmoid.
+
       # This setting controls whether to copy variables around in a daisy chain
       # (if true) or leave their placement to TensorFlow. It only affects multi
       # device training and mostly should be turned on for performance. One
@@ -325,7 +339,15 @@ def basic_params1():
       # Load weights from a second model. For instance, when using
       # pre-trained weights, you might want to initialize the encoder
       # and decoder by loading different models.
-      warm_start_from_second=""
+      warm_start_from_second="",
+      # Area attention hyper parameters
+      area_value_mode="none",
+      area_key_mode="none",
+      # Using area attention for the number of layers from the bottom
+      num_area_layers=0,
+      max_area_width=1,
+      max_area_height=1,
+      memory_height=1
   )
 
 
